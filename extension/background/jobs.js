@@ -17,7 +17,8 @@ import * as cdp from './cdp.js';
 import * as store from './store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
-const MAX_FILL_MS = 8 * 60 * 1000;
+// Large : attente des envois de photos (jusqu'à ~2 min + 90 s) et pages Vinted lentes.
+const MAX_FILL_MS = 12 * 60 * 1000;
 const SHRINK_ABOVE = 600 * 1024; // au-delà (octets JPEG), la photo est réencodée
 const SHRINK_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 };
 

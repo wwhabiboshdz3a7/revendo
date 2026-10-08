@@ -2,7 +2,7 @@
  * Revendo — tests du robot du PC (photos) : moniteur réseau des envois
  * (cdp.js), photos visibles et allègement (jobs.js), statut final (finalizeTab).
  * Sans réseau ni navigateur : chrome.*, document et XMLHttpRequest sont simulés.
- * Lancement : node --test tools/test/
+ * Lancement : node --test tools/test/*.test.mjs
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

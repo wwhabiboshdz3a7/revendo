@@ -57,6 +57,7 @@ let relay = null;
 let lastState = null;
 let loadError = '';
 let refreshing = false;
+let refreshAgain = false; // actualisation demandée pendant une lecture en cours
 let pollTimer = null;
 
 /** Annonce en préparation. Les photos : voir newPhoto(). */
@@ -363,8 +364,14 @@ function renderHome() {
 
 /** Relit le relais. spin : l'icône tourne (actualisation demandée, pas le rafraîchissement auto). */
 async function refresh({ spin = false } = {}) {
-  if (!relay || refreshing) return;
+  if (!relay) return;
+  if (refreshing) {
+    // La lecture en cours peut dater d'avant un envoi / une suppression : on relira juste après.
+    refreshAgain = true;
+    return;
+  }
   refreshing = true;
+  refreshAgain = false;
   if (spin) $('refreshBtn').classList.add('is-busy');
   try {
     lastState = await relay.state();
@@ -380,6 +387,7 @@ async function refresh({ spin = false } = {}) {
   } finally {
     refreshing = false;
     $('refreshBtn').classList.remove('is-busy');
+    if (refreshAgain) void refresh();
   }
 }
 
@@ -440,6 +448,7 @@ function closeSheet() {
   sheetCtx = null;
   document.body.classList.remove('sheet-open');
   const done = () => {
+    if (sheetCtx) return; // rouverte pendant l'animation de fermeture : on la laisse visible
     sheet.classList.add('hidden');
     sheet.classList.remove('is-closing');
     $('sheetPanel').style.transform = '';
@@ -873,8 +882,11 @@ $('photoInput').addEventListener('change', (e) => {
 // Nouvelle annonce : prix, compte, rayon, précisions
 // ===========================================================================
 
-/** Ouvre le formulaire ; une annonce commencée (photos déjà choisies) est reprise telle quelle. */
-function openNew({ reset = false } = {}) {
+/**
+ * Ouvre le formulaire ; une annonce commencée (photos déjà choisies) est reprise telle quelle.
+ * display: false → remet le formulaire à zéro sans quitter l'écran affiché.
+ */
+function openNew({ reset = false, display = true } = {}) {
   if (reset || !form.photos.length) {
     form.photos = [];
     form.condition = '';
@@ -892,7 +904,8 @@ function openNew({ reset = false } = {}) {
   renderConditionChips();
   renderMoreSummary();
   renderSendState();
-  show('newView');
+  renderNewButton();
+  if (display) show('newView');
 }
 
 $('backBtn').addEventListener('click', () => {
@@ -1090,6 +1103,8 @@ $('sendBtn').addEventListener('click', async () => {
   photosChanged();
   try {
     await waitForPhotos();
+    // Toutes les photos ont pu être écartées pendant la préparation (images illisibles).
+    if (!form.photos.length) throw new Error('Ajoute au moins une photo.');
     const failed = form.photos.filter((p) => p.state !== 'ok');
     if (failed.length) throw new Error(`${plural(failed.length, 'photo')} non envoyée${failed.length > 1 ? 's' : ''} (${failed[0].error || 'erreur inconnue'}). Vérifie le réseau puis réessaie.`);
     form.committing = true;
@@ -1113,7 +1128,9 @@ $('sendBtn').addEventListener('click', async () => {
     form.sending = false;
     form.committing = false;
     toast(`Envoyée à @${account} : le PC s’en occupe.`, { kind: 'ok' });
-    openNew({ reset: true }); // prêt pour l'article suivant (compte et rayon conservés)
+    // Prêt pour l'article suivant (compte et rayon conservés), sans ramener de force
+    // sur le formulaire si l'on est revenu à l'accueil pendant l'envoi.
+    openNew({ reset: true, display: !$('newView').classList.contains('hidden') });
     void refresh();
   } catch (err) {
     form.sendError = err.message;

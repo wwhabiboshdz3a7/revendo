@@ -490,16 +490,22 @@
   /**
    * Repli : une photo à la fois (l'input est recherché à chaque fois, React
    * peut le recréer). Renvoie le nombre de photos à attendre ; note dans
-   * photoTrack.how comment l'ajout s'est passé.
+   * photoTrack.how comment l'ajout s'est passé. afterBatch : un lot a déjà été
+   * déposé (peut-être juste lent) → on lui laisse 10 s de plus après la 1re photo.
    */
-  async function dropOneByOne(files) {
+  async function dropOneByOne(files, { afterBatch = false } = {}) {
     let sent = 0;
     let accepted = 0;
     let misses = 0;
-    let perPhoto = 1; // requêtes « /photo » par photo, mesuré sur la première
+    // Vignettes et requêtes « /photo » par photo, mesurées sur la première acceptée.
+    // Plafonnées à 2 : un lot qui démarre pendant la mesure ne doit pas la fausser.
+    let perThumb = 1;
+    let perPhoto = 1;
+    // Plus d'activité que d'envois unitaires : le lot est finalement traité.
+    const batchLate = () => thumbsGained() > sent * perThumb || netDelta().started > sent * perPhoto;
     for (const file of files) {
-      // Plus d'activité que d'envois unitaires : le lot est finalement traité → on arrête (pas de doublon).
-      if (thumbsGained() > sent || netDelta().started > sent * perPhoto) {
+      // Lot pris en compte en retard → on arrête (pas de doublon).
+      if (batchLate()) {
         photoTrack.how = sent ? `lot pris en compte en retard (${sent} photo${sent > 1 ? 's' : ''} peut-être en double)` : '';
         return files.length;
       }
@@ -520,7 +526,12 @@
       accepted += 1;
       await waitFor(() => thumbsGained() > t0 || netDelta().ended > n0.ended, 20000, 250);
       await sleep(300);
-      if (accepted === 1) perPhoto = Math.max(1, netDelta().started - n0.started);
+      if (accepted === 1) {
+        perThumb = Math.min(2, Math.max(1, thumbsGained() - t0));
+        perPhoto = Math.min(2, Math.max(1, netDelta().started - n0.started));
+        // Lot peut-être seulement lent : 10 s de grâce avant la 2e photo (s'il arrive d'ici là : 1 seul doublon).
+        if (afterBatch) await waitFor(batchLate, 10000, 250);
+      }
     }
     photoTrack.how = accepted ? 'ajoutées une par une' : 'la zone photo n’a pas réagi';
     return accepted;
@@ -549,7 +560,7 @@
     } else {
       dropFiles(input, list);
       // Aucun signal en 10 s : lot refusé en silence → une par une.
-      if (!(await waitFor(anySignal, 10000, 250)) && list.length > 1) expected = await dropOneByOne(list);
+      if (!(await waitFor(anySignal, 10000, 250)) && list.length > 1) expected = await dropOneByOne(list, { afterBatch: true });
     }
     if (expected > 0) await waitPhotos(expected);
     const res = photoResult();
@@ -1207,10 +1218,11 @@
         who = `Revendo${job.account?.login ? ` · compte @${job.account.login}` : ''}`;
         setState(r, 'busy', 'Remplissage du brouillon…');
         const rec = job.recognition || {};
-        const mode = rec.mode === 'ai' ? `Reconnaissance IA${rec.model ? ` (${rec.model})` : ''}` : 'Mode gratuit (recommandations Vinted)';
+        const mode =
+          rec.mode === 'ai' ? `Reconnaissance IA${rec.model ? ` (${rec.model})` : ''}` : rec.mode === 'manual' ? 'Fiche saisie sur le PC' : 'Mode gratuit (recommandations Vinted)';
         meta = `<div class="meta">${esc(mode)}</div>`;
-        if (rec.mode !== 'ai' && rec.error) meta += `<div class="msg warn">IA indisponible : ${esc(rec.error)}</div>`;
-        else if (rec.mode !== 'ai' && rec.noKey) meta += '<div class="note">Aucune clé IA configurée : marque et catégorie sont devinées sans IA.</div>';
+        if (rec.mode === 'free' && rec.error) meta += `<div class="msg warn">IA indisponible : ${esc(rec.error)}</div>`;
+        else if (rec.mode === 'free' && rec.noKey) meta += '<div class="note">Aucune clé IA configurée : marque et catégorie sont devinées sans IA.</div>';
         r.getElementById('b').innerHTML = `<div class="now">Ne touche à rien pendant ~1 minute.</div>${meta}`;
       },
       progress(label) {

@@ -88,7 +88,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const worker = await getWorker();
       const texts = [];
       for (const img of msg.images || []) {
-        let read = await readImage(worker, img);
+        // Une image illisible ne doit pas priver les autres de leur lecture.
+        let read;
+        try {
+          read = await readImage(worker, img);
+        } catch (err) {
+          console.warn('[Revendo] OCR image illisible', err);
+          texts.push('');
+          continue;
+        }
         // Presque rien de lisible : l'étiquette est peut-être à l'envers, on garde la meilleure lecture.
         if (msg.retryUpsideDown && read.score < 8) {
           try {

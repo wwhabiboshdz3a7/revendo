@@ -26,7 +26,8 @@ export const AI_PRESETS = {
     label: 'Google Gemini (offre gratuite)',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-flash-latest',
-    fallbackModels: ['gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    // Chaque modèle a son propre quota gratuit ; un nom inconnu (404) est simplement sauté.
+    fallbackModels: ['gemini-flash-lite-latest', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
     extra: { reasoning_effort: 'low' },
     keyUrl: 'https://aistudio.google.com/apikey',
   },

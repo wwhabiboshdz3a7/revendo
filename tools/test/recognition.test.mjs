@@ -3,10 +3,10 @@
  * lecture de la réponse, marques (orthographe, détection tolérante à l'OCR),
  * tailles, fusion des sources, et appels IA avec un fetch simulé (mode JSON,
  * replis, seconde passe « étiquette »). Sans réseau ni navigateur.
- * Lancement : node --test tools/test/
+ * Lancement : node --test tools/test/*.test.mjs
  */
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 
 import {
   AI_PRESETS,
@@ -30,7 +30,7 @@ import {
   normalizeSize,
 } from '../../extension/shared/listing.js';
 import { BRANDS, BRAND_ALIASES, BRAND_AMBIGUOUS } from '../../extension/shared/vinted-data.js';
-import { jpegDims } from '../../extension/background/recognize.js';
+import { jpegDims, ocrImages } from '../../extension/background/recognize.js';
 
 // ---------------------------------------------------------------------------
 // Faux fournisseur IA
@@ -194,6 +194,12 @@ test('detectBrand : marques ambiguës seulement seules sur une ligne, pays ignor
   assert.equal(detectBrand('MADE IN JORDAN\n100% COTTON'), null);
   assert.equal(detectBrand('all rights reserved'), null);
   assert.equal(detectBrand('Lee Cooper | W32'), 'Lee Cooper');
+  // Mots décoratifs de fin tolérés (« GUESS JEANS », « GAP KIDS »), pas les mots courants.
+  assert.equal(detectBrand('GUESS JEANS\nMADE IN TUNISIA'), 'Guess');
+  assert.equal(detectBrand('SELECTED HOMME | L'), 'Selected');
+  assert.equal(detectBrand('GAP KIDS'), 'Gap');
+  assert.equal(detectBrand('guess who'), null);
+  assert.equal(detectBrand('pieces of cloth'), null);
 });
 
 test('detectBrandFuzzy : erreurs d’OCR reconnues', () => {
@@ -309,7 +315,8 @@ test('mergeLabelPass : complète sans écraser', () => {
 
 test('presets Gemini : modèles de secours', () => {
   assert.equal(AI_PRESETS.gemini.model, 'gemini-flash-latest');
-  assert.deepEqual(AI_PRESETS.gemini.fallbackModels, ['gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
+  // Modèles de secours de la v3.2.2 conservés (gemini-3.8-flash, gemini-3.5-flash-lite).
+  assert.deepEqual(AI_PRESETS.gemini.fallbackModels, ['gemini-flash-lite-latest', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
   assert.equal(AI_PRESETS.gemini.extra.reasoning_effort, 'low');
 });
 
@@ -354,8 +361,8 @@ test('chatWithFallback : 400 → second essai sans response_format ni paramètre
 test('chatWithFallback : modèle inconnu, surcharge et quota → modèle suivant ; clé refusée → arrêt', async () => {
   let f = fakeFetch([{ status: 404, error: 'models/gemini-flash-latest is not found' }, { status: 503, error: 'The model is overloaded' }, '{"ok":true}']);
   let res = await chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl });
-  assert.deepEqual(f.calls.map((c) => c.model), ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-flash']);
-  assert.equal(res.model, 'gemini-2.5-flash');
+  assert.deepEqual(f.calls.map((c) => c.model), ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.8-flash']);
+  assert.equal(res.model, 'gemini-3.8-flash');
 
   f = fakeFetch([{ status: 429, error: 'Resource has been exhausted (e.g. check quota).' }, '{"ok":true}']);
   res = await chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl });
@@ -364,7 +371,7 @@ test('chatWithFallback : modèle inconnu, surcharge et quota → modèle suivant
 
   f = fakeFetch([{ status: 429, error: 'quota' }]);
   await assert.rejects(chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl }), (e) => e.code === 'quota' && /^Quota IA atteint/.test(e.message));
-  assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 6);
 
   f = fakeFetch([{ status: 400, error: [{ error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } }] }]);
   await assert.rejects(chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl }), (e) => e.code === 'auth' && /^Clé IA refusée/.test(e.message));
@@ -490,4 +497,34 @@ test('jpegDims : dimensions lues dans l’en-tête JPEG', () => {
   assert.deepEqual(jpegDims(Buffer.from(bytes).toString('base64')), { width: 1200, height: 1600 });
   assert.equal(jpegDims(Buffer.from('pas une image').toString('base64')), null);
   assert.equal(jpegDims(''), null);
+});
+
+test('ocrImages : un OCR figé (packs de langue injoignables) abandonne au lieu de bloquer le robot', async () => {
+  const prev = globalThis.chrome;
+  globalThis.chrome = {
+    runtime: {
+      getURL: (p) => `chrome-extension://test/${p}`,
+      getContexts: async () => [{ contextType: 'OFFSCREEN_DOCUMENT' }],
+      sendMessage: () => new Promise(() => {}), // le document offscreen ne répond jamais
+    },
+  };
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let settled = false;
+    const outcome = ocrImages(['data:image/jpeg;base64,AAAA'])
+      .then(() => 'résolu', (e) => e.message)
+      .finally(() => (settled = true));
+    const flush = async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve(); // laisse ensureOffscreen() se terminer
+    };
+    await flush();
+    mock.timers.tick(69999); // 60 s + 10 s par image
+    await flush();
+    assert.equal(settled, false);
+    mock.timers.tick(1);
+    assert.match(await outcome, /^OCR trop long/);
+  } finally {
+    mock.timers.reset();
+    globalThis.chrome = prev;
+  }
 });

@@ -3,7 +3,7 @@
  * avance (uploadBlob + nouveaux essais), création d'annonce en UN commit sans
  * relire l'arborescence, lecture parallèle des photos dans l'ordre.
  * L'API Git Data de GitHub est simulée en mémoire (aucun réseau).
- * Lancement : node --test tools/test/
+ * Lancement : node --test tools/test/*.test.mjs
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

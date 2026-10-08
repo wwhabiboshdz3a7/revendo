@@ -271,20 +271,29 @@ function brandSpellings(b) {
   return bare !== nb && bare.length >= 4 ? [nb, bare] : [nb];
 }
 
-/** Lignes d'un texte d'étiquette (retours à la ligne ou « | »), réduites à leur slug. */
+/**
+ * Lignes d'un texte d'étiquette (retours à la ligne ou « | »), réduites à leur
+ * slug, avec et sans les mots décoratifs de fin (« GUESS JEANS » → guess,
+ * « GAP KIDS » → gap ; « dry clean only » reste drycleanonly).
+ */
 function lineSlugs(text) {
-  return new Set(
-    String(text || '')
-      .split(/[\n\r|]+/)
-      .map((l) => slug(l))
-      .filter(Boolean),
-  );
+  const out = new Set();
+  for (const line of String(text || '').split(/[\n\r|]+/)) {
+    const words = line.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    out.add(slug(line));
+    while (words.length > 1 && isBrandNoise(words[words.length - 1])) words.pop();
+    out.add(slug(words.join(' ')));
+  }
+  out.delete('');
+  return out;
 }
 
 /**
  * Marque citée en toutes lettres dans un texte (la plus longue l'emporte).
  * Les marques qui sont aussi des mots courants (BRAND_AMBIGUOUS : « Only »,
- * « Tex »…) ne comptent que si elles occupent seules une ligne.
+ * « Tex »…) ne comptent que si elles occupent seules une ligne (mots
+ * décoratifs de fin tolérés : « GUESS JEANS », « GAP KIDS »).
  */
 export function detectBrand(text, brands = BRANDS) {
   const t = ` ${stripOrigin(normalize(text))} `;

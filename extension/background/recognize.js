@@ -83,12 +83,27 @@ async function ensureOffscreen() {
   }
 }
 
+/**
+ * Délai maximal de l'OCR (premier téléchargement des packs de langue compris).
+ * Sans lui, un téléchargement figé (CDN injoignable, proxy…) bloquait
+ * l'analyse, donc le robot, indéfiniment.
+ */
+const ocrTimeoutMs = (count) => 60000 + 10000 * count;
+
 /** Texte lu sur chaque image (même ordre). opts.retryUpsideDown : relit à 180° une image presque vide. */
 export async function ocrImages(images, opts = {}) {
   await ensureOffscreen();
-  const res = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'RV_OCR', images, ...opts });
-  if (!res?.ok) throw new Error(res?.error || 'OCR indisponible');
-  return res.texts || [];
+  let timer = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('OCR trop long (packs de langue injoignables ?)')), ocrTimeoutMs(images.length));
+  });
+  try {
+    const res = await Promise.race([chrome.runtime.sendMessage({ target: 'offscreen', type: 'RV_OCR', images, ...opts }), timeout]);
+    if (!res?.ok) throw new Error(res?.error || 'OCR indisponible');
+    return res.texts || [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------

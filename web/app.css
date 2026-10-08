@@ -323,7 +323,7 @@ body.has-action-bar .toast { bottom: calc(var(--safe-bottom) + 132px); }
 .divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 14px; color: var(--text-3); font-size: 13px; }
 .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border-strong); }
 .code-input { margin-bottom: 12px; font-family: var(--mono); font-size: 13px; resize: none; word-break: break-all; }
-@media (max-width: 380px) { .code-input { font-size: 16px; } }
+@media (pointer: coarse) { .code-input { font-size: 16px; } } /* < 16 px : zoom automatique sur iPhone */
 
 /* ===================================================================== */
 /* Accueil : comptes                                                      */
@@ -663,6 +663,7 @@ body.has-action-bar .toast { bottom: calc(var(--safe-bottom) + 132px); }
 /* ===================================================================== */
 
 @keyframes spin { to { transform: rotate(360deg); } }
+.ring { flex: none; animation: spin .9s linear infinite; } /* roues de chargement (préparation, envoi) */
 @keyframes pulse { 50% { opacity: .35; } }
 
 @media (hover: none) {
