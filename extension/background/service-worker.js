@@ -94,6 +94,16 @@ const handlers = {
     else if (msg.op === 'insert') await cdp.insertText(tabId, msg.text, { perKey: !!msg.perKey });
     return { ok: true };
   },
+  /** Compteurs des envois de photos (monde MAIN) : seulement pour un onglet de remplissage. */
+  async RV_NET_MONITOR(_msg, sender) {
+    const tabId = sender.tab?.id;
+    if (!tabId || !(await store.getTabJob(tabId))) return { ok: false, error: 'onglet non autorisé' };
+    try {
+      return await cdp.watchPhotoUploads(tabId);
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  },
   async RV_FOCUS(_msg, sender) {
     if (sender.tab?.id) {
       await chrome.tabs.update(sender.tab.id, { active: true });

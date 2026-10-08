@@ -362,6 +362,17 @@
   }
 
   // ---------- Photos ----------
+  //
+  // Sans photos, Vinted ne recommande aucune catégorie et tout le reste échoue :
+  // on vérifie donc ce que Vinted a VRAIMENT reçu, par deux sources :
+  //   • les vignettes apparues au-dessus du champ titre (img, blob:, data:, fonds) ;
+  //   • le moniteur réseau (service worker → monde MAIN) qui compte les envois
+  //     POST/PUT « /photo » dans des attributs data-rv-ph-* de <html>.
+  // Un lot refusé en silence (zone « un fichier à la fois ») est renvoyé photo
+  // par photo, mais JAMAIS si Vinted a commencé à traiter le lot (pas de doublon).
+
+  /** Point de référence pris juste avant l'ajout des photos. */
+  const photoTrack = { total: 0, thumbs: 0, net: { started: 0, done: 0, failed: 0 }, how: '' };
 
   function base64ToFile(b64, name, mime = 'image/jpeg') {
     const bin = atob(b64);
@@ -370,10 +381,149 @@
     return new File([bytes], name, { type: mime, lastModified: Date.now() });
   }
 
+  const titleTop = () => SEL.title()?.getBoundingClientRect().top ?? Infinity;
+
+  /** Vignettes visibles au-dessus du champ titre, dédupliquées par image. */
   function countThumbs() {
-    const title = SEL.title();
-    const limit = title ? title.getBoundingClientRect().top : Infinity;
-    return [...document.querySelectorAll('main img, form img')].filter((img) => isVisible(img) && img.getBoundingClientRect().top < limit).length;
+    const limit = titleTop();
+    const keys = new Set();
+    const fits = (el) => {
+      if (!isVisible(el)) return false;
+      const r = el.getBoundingClientRect();
+      return r.top < limit && r.width >= 28 && r.height >= 28;
+    };
+    for (const img of document.querySelectorAll('main img, form img, img[src^="blob:"], img[src^="data:"]')) {
+      if (fits(img)) keys.add(img.currentSrc || img.getAttribute('src') || img);
+    }
+    for (const el of document.querySelectorAll('main [style*="background"], form [style*="background"]')) {
+      const url = /url\(\s*["']?([^"')]+)/.exec(el.style.backgroundImage || '')?.[1];
+      if (url && fits(el)) keys.add(url);
+    }
+    return keys.size;
+  }
+
+  /** Indicateurs de chargement (spinners, barres) au-dessus du titre. */
+  function countBusy() {
+    const limit = titleTop();
+    return [...document.querySelectorAll('[role="progressbar"], [aria-busy="true"], [class*="spinner" i], [class*="loader" i], [class*="progress" i]')].filter(
+      (el) => isVisible(el) && el.getBoundingClientRect().top < limit,
+    ).length;
+  }
+
+  /** Compteurs du moniteur réseau (posés par le monde MAIN sur <html>). */
+  function netCounts() {
+    const d = document.documentElement.dataset;
+    const n = (v) => Math.max(0, parseInt(v || '0', 10) || 0);
+    const started = n(d.rvPhStarted);
+    const done = n(d.rvPhDone);
+    const failed = n(d.rvPhFailed);
+    return { on: d.rvPhMonitor === '1', started, done, failed, pending: Math.max(0, started - done - failed) };
+  }
+
+  /** Envois photo depuis le point de référence. */
+  function netDelta() {
+    const now = netCounts();
+    const b = photoTrack.net;
+    const started = Math.max(0, now.started - b.started);
+    const done = Math.max(0, now.done - b.done);
+    const failed = Math.max(0, now.failed - b.failed);
+    return { on: now.on, started, done, failed, ended: done + failed, pending: now.pending };
+  }
+
+  const thumbsGained = () => Math.max(0, countThumbs() - photoTrack.thumbs);
+
+  /** Photos reçues par Vinted : vignettes nouvelles, ou envois réussis si les vignettes sont invisibles. */
+  function photosShown() {
+    if (!photoTrack.total) return 0;
+    return Math.min(photoTrack.total, Math.max(thumbsGained(), netDelta().done));
+  }
+
+  function photoResult() {
+    const shown = photosShown();
+    const failed = netDelta().failed;
+    const notes = [photoTrack.how, failed ? `${failed} envoi${failed > 1 ? 's' : ''} refusé${failed > 1 ? 's' : ''} par Vinted` : ''].filter(Boolean);
+    return { ok: shown > 0, shown, detail: `${shown}/${photoTrack.total} visibles${notes.length ? ` — ${notes.join(', ')}` : ''}` };
+  }
+
+  function photoInput() {
+    const all = [...document.querySelectorAll('input[type="file"]')];
+    return all.find((i) => /image/i.test(i.accept || '') || i.multiple) || all[0] || null;
+  }
+
+  function dropFiles(input, files) {
+    const dt = new DataTransfer();
+    files.forEach((f) => dt.items.add(f));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  /**
+   * Attend les photos : arrêt dès que toutes les vignettes sont là OU que tous
+   * les envois sont terminés. Délai ≈ 15 s + 6 s par photo (max 120 s),
+   * prolongé tant que ça progresse.
+   */
+  async function waitPhotos(expected) {
+    const start = Date.now();
+    const budget = Math.min(120000, 15000 + 6000 * expected);
+    let last = '';
+    let moved = start;
+    for (;;) {
+      const thumbs = thumbsGained();
+      const net = netDelta();
+      if (thumbs >= expected || (net.ended >= expected && net.pending === 0)) return;
+      const sig = `${thumbs}|${net.started}|${net.ended}`;
+      const now = Date.now();
+      if (sig !== last) {
+        last = sig;
+        moved = now;
+        banner.progress(`Photos — ${photosShown()}/${expected}`);
+      }
+      // Plus rien en vol ni de nouveauté depuis 6 s : Vinted a fini (et en a peut-être refusé).
+      if (net.on && net.started > 0 && net.pending === 0 && now - moved > 6000) return;
+      if (now - start > budget && now - moved > 8000) return;
+      if (now - start > budget + 60000) return;
+      await sleep(300);
+    }
+  }
+
+  /**
+   * Repli : une photo à la fois (l'input est recherché à chaque fois, React
+   * peut le recréer). Renvoie le nombre de photos à attendre ; note dans
+   * photoTrack.how comment l'ajout s'est passé.
+   */
+  async function dropOneByOne(files) {
+    let sent = 0;
+    let accepted = 0;
+    let misses = 0;
+    let perPhoto = 1; // requêtes « /photo » par photo, mesuré sur la première
+    for (const file of files) {
+      // Plus d'activité que d'envois unitaires : le lot est finalement traité → on arrête (pas de doublon).
+      if (thumbsGained() > sent || netDelta().started > sent * perPhoto) {
+        photoTrack.how = sent ? `lot pris en compte en retard (${sent} photo${sent > 1 ? 's' : ''} peut-être en double)` : '';
+        return files.length;
+      }
+      const input = await waitFor(photoInput, 3000);
+      if (!input) break;
+      const t0 = thumbsGained();
+      const n0 = netDelta();
+      dropFiles(input, [file]);
+      sent += 1;
+      banner.progress(`Photos — une par une (${sent}/${files.length})`);
+      const began = await waitFor(() => thumbsGained() > t0 || netDelta().started > n0.started, 10000, 250);
+      if (!began) {
+        misses += 1;
+        if (misses >= 2 || sent === 1) break; // la zone ne prend rien : inutile d'insister
+        continue;
+      }
+      misses = 0;
+      accepted += 1;
+      await waitFor(() => thumbsGained() > t0 || netDelta().ended > n0.ended, 20000, 250);
+      await sleep(300);
+      if (accepted === 1) perPhoto = Math.max(1, netDelta().started - n0.started);
+    }
+    photoTrack.how = accepted ? 'ajoutées une par une' : 'la zone photo n’a pas réagi';
+    return accepted;
   }
 
   async function fillPhotos(count) {
@@ -382,23 +532,36 @@
       const res = await send('RV_TAB_PHOTOS', { from: i, count: 3 });
       for (const p of res?.photos || []) files.push(base64ToFile(p.base64, p.name || `photo-${files.length + 1}.jpg`, p.mime));
     }
-    if (!files.length) return { ok: false, detail: 'photos introuvables' };
-    const input =
-      [...document.querySelectorAll('input[type="file"]')].find((i) => /image/i.test(i.accept || '') || i.multiple) ||
-      document.querySelector('input[type="file"]');
-    if (!input) return { ok: false, detail: 'zone photo introuvable' };
+    if (!files.length) return { ok: false, detail: 'photos introuvables', shown: 0 };
+    const list = files.slice(0, 20);
+    const input = photoInput();
+    if (!input) return { ok: false, detail: 'zone photo introuvable', shown: 0 };
     window.scrollTo({ top: 0 });
     await sleep(200);
-    const before = countThumbs();
-    const dt = new DataTransfer();
-    files.slice(0, 20).forEach((f) => dt.items.add(f));
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await waitFor(() => countThumbs() - before >= files.length, 20000, 300);
-    const n = Math.max(0, countThumbs() - before);
-    if (n > 0) await sleep(1500); // laisse Vinted analyser les photos (recommandations)
-    return { ok: n > 0, detail: `${Math.min(n, files.length)}/${files.length} visibles` };
+    Object.assign(photoTrack, { total: list.length, thumbs: countThumbs(), net: netCounts(), how: '' });
+    const busy0 = countBusy();
+    const anySignal = () => thumbsGained() > 0 || netDelta().started > 0 || countBusy() > busy0;
+
+    let expected = list.length;
+    if (list.length > 1 && !input.multiple) {
+      // Zone « un fichier à la fois » déclarée : pas de lot.
+      expected = await dropOneByOne(list);
+    } else {
+      dropFiles(input, list);
+      // Aucun signal en 10 s : lot refusé en silence → une par une.
+      if (!(await waitFor(anySignal, 10000, 250)) && list.length > 1) expected = await dropOneByOne(list);
+    }
+    if (expected > 0) await waitPhotos(expected);
+    const res = photoResult();
+    if (res.shown > 0) await sleep(1500); // laisse Vinted analyser les photos (recommandations)
+    return res;
+  }
+
+  /** Attend la fin des envois de photos encore en vol (moniteur réseau), au plus `max` ms. */
+  async function settleUploads(max) {
+    if (!photoTrack.total || !netCounts().on || !netCounts().pending) return;
+    banner.progress('Photos — fin des envois');
+    await waitFor(() => netCounts().pending === 0, max, 400);
   }
 
   // ---------- Texte ----------
@@ -857,12 +1020,16 @@
     await send('RV_FOCUS');
     await waitForForm();
     await dismissOverlays();
+    // Compteur des envois de photos (si l'injection échoue : vignettes seules).
+    if (job.photoCount > 0) await send('RV_NET_MONITOR');
 
     await step('Photos', job.photoCount > 0, () => fillPhotos(job.photoCount));
     await step('Titre', !!job.title, () => fillText(SEL.title, job.title));
     await step('Description', !!job.description, () => fillText(SEL.desc, job.description));
     await step('Prix', !!job.price, () => fillPrice(job.price));
 
+    // Les recommandations de catégorie viennent des photos : envois terminés d'abord.
+    await settleUploads(30000);
     const cat = await step('Catégorie', true, () => selectCategory(job));
     if (job.composeAfterCategory && cat?.ok) {
       // Mode gratuit : titre et description composés d'après la catégorie choisie par Vinted.
@@ -901,11 +1068,21 @@
       const entry = fields.find((f) => f.label === 'Couleur');
       if (entry) Object.assign(entry, { ok: again.ok, detail: again.detail });
     }
+    // Photos encore en cours d'envoi : on attend, puis on recompte (ligne « Photos » à jour).
+    let shown = 0;
+    if (photoTrack.total) {
+      await settleUploads(90000);
+      const again = photoResult();
+      shown = again.shown;
+      const entry = fields.find((f) => f.label === 'Photos');
+      if (entry) Object.assign(entry, { ok: again.ok, detail: again.detail });
+    }
 
     const base = {
       fields: dedupe(fields),
       title: job.title,
       category: cat?.name || '',
+      photos: { sent: job.photoCount || 0, shown },
     };
 
     if (!job.autoSave) return { ...base, ok: true, draftSaved: false, message: 'Formulaire rempli : vérifie puis enregistre le brouillon.' };
@@ -946,56 +1123,116 @@
   const banner = (() => {
     let root = null;
     let host = null;
-    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    let meta = '';
+    let who = 'Revendo';
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    // Icônes SVG (24×24, trait 1,75, style Lucide).
+    const svg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+    const ICON = {
+      check: svg('<path d="M20 6 9 17l-5-5"/>'),
+      cross: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+      done: svg('<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/>'),
+      alert: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>'),
+    };
     const ensure = () => {
       if (root) return root;
       host = document.createElement('div');
-      host.style.cssText = 'all:initial;position:fixed;top:14px;right:14px;z-index:2147483647;';
+      host.style.cssText = 'all:initial;position:fixed;top:16px;right:16px;z-index:2147483647;';
       document.documentElement.appendChild(host);
       root = host.attachShadow({ mode: 'open' });
       root.innerHTML = `
         <style>
-          .box{font:13px/1.45 -apple-system,"Segoe UI",Arial,sans-serif;background:#fff;color:#17191c;width:350px;border-radius:14px;
-            box-shadow:0 12px 34px rgba(0,0,0,.2);overflow:hidden;border:1px solid #e3e6e9}
-          .head{background:linear-gradient(135deg,#0bb8c1,#077a81);color:#fff;padding:12px 14px;font-weight:700;display:flex;justify-content:space-between;gap:8px}
-          .x{cursor:pointer;opacity:.85}
+          :host{all:initial}
+          *{box-sizing:border-box}
+          .box{font:13px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#0f172a;background:#fff;
+            width:min(344px,calc(100vw - 32px));border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;-webkit-font-smoothing:antialiased;
+            box-shadow:0 1px 2px rgba(15,23,42,.06),0 12px 32px -8px rgba(15,23,42,.18)}
+          svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;display:block}
+          .head{display:flex;align-items:center;gap:10px;padding:12px 10px 12px 14px;border-bottom:1px solid #eef2f6}
+          .st{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:#e8f5f5;color:#0a9396}
+          .st.warn{background:#fff7e6;color:#b45309}
+          .st.err{background:#fdeeee;color:#dc2626}
+          .spin{width:14px;height:14px;border-radius:50%;border:2px solid #bfe3e3;border-top-color:#0a9396;animation:rv-spin .8s linear infinite}
+          @keyframes rv-spin{to{transform:rotate(360deg)}}
+          .ttl{flex:1;min-width:0}
+          .t{font-weight:600;font-size:13.5px;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+          .s{font-size:11.5px;color:#64748b}
+          .x{flex:none;width:28px;height:28px;border:0;border-radius:7px;background:none;color:#64748b;cursor:pointer;display:grid;place-items:center;padding:0}
+          .x:hover{background:#f1f5f9;color:#0f172a}
+          .x:focus-visible{outline:2px solid #0a9396;outline-offset:1px}
+          .bar{height:2px;background:#eef2f6;overflow:hidden;position:relative}
+          .bar::after{content:"";position:absolute;top:0;bottom:0;left:0;width:34%;background:#0a9396;animation:rv-bar 1.3s ease-in-out infinite}
+          .bar.off{display:none}
+          @keyframes rv-bar{from{transform:translateX(-100%)}to{transform:translateX(300%)}}
           .body{padding:10px 14px 12px;max-height:60vh;overflow:auto}
-          .row{display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f3f4}
-          .row:last-child{border-bottom:0}
-          .l{font-weight:650;min-width:98px}
-          .d{color:#5f646a;word-break:break-word}
-          .note{margin-top:8px;font-size:12px;color:#5f646a}
-          .warn{margin-top:8px;font-size:12px;background:#fff6e5;border:1px solid #ffd99a;border-radius:8px;padding:8px}
+          .now b{font-weight:600}
+          .meta{margin-top:2px;font-size:12px;color:#64748b}
+          .row{display:grid;grid-template-columns:16px 88px minmax(0,1fr);gap:8px;align-items:start;padding:6px 0;border-top:1px solid #f1f5f9}
+          .row:first-child{border-top:0}
+          .ic{height:19px;display:grid;place-items:center}
+          .ic svg{width:14px;height:14px;stroke-width:2}
+          .ic.ok{color:#0a9396}
+          .ic.ko{color:#dc2626}
+          .l{font-weight:550}
+          .d{color:#64748b;word-break:break-word}
+          .note{margin-top:10px;font-size:12px;color:#64748b}
+          .msg{margin-top:10px;font-size:12px;border:1px solid;border-radius:8px;padding:8px 10px}
+          .msg.info{background:#f0f9f9;border-color:#cde8e8;color:#0b5c5e}
+          .msg.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
         </style>
-        <div class="box"><div class="head"><span id="t"></span><span class="x" id="x">✕</span></div><div class="body" id="b"></div></div>`;
+        <div class="box" role="status" aria-live="polite">
+          <div class="head">
+            <span class="st" id="st"></span>
+            <div class="ttl"><div class="t" id="t"></div><div class="s" id="s"></div></div>
+            <button class="x" id="x" type="button" aria-label="Fermer" title="Fermer">${ICON.cross}</button>
+          </div>
+          <div class="bar" id="bar"></div>
+          <div class="body" id="b"></div>
+        </div>`;
       root.getElementById('x').addEventListener('click', () => host.remove());
       return root;
+    };
+    /** État de l'en-tête : busy (en cours), ok, warn (à compléter), err. */
+    const setState = (r, state, title, sub = who) => {
+      const st = r.getElementById('st');
+      st.className = `st${state === 'warn' || state === 'err' ? ` ${state}` : ''}`;
+      st.innerHTML = state === 'busy' ? '<span class="spin"></span>' : state === 'ok' ? ICON.done : ICON.alert;
+      r.getElementById('bar').className = state === 'busy' ? 'bar' : 'bar off';
+      r.getElementById('t').textContent = title;
+      r.getElementById('s').textContent = sub;
     };
     return {
       start(job) {
         const r = ensure();
-        r.getElementById('t').textContent = '⏳ Revendo remplit le brouillon…';
-        const mode = job.recognition?.mode === 'ai' ? `reconnaissance IA (${job.recognition.model || ''})` : 'mode gratuit (recommandations Vinted)';
-        r.getElementById('b').innerHTML = `<div class="note">Ne touche à rien pendant ~1 minute.<br>${esc(mode)}${job.account?.login ? ` · compte @${esc(job.account.login)}` : ''}</div>`;
+        who = `Revendo${job.account?.login ? ` · compte @${job.account.login}` : ''}`;
+        setState(r, 'busy', 'Remplissage du brouillon…');
+        const rec = job.recognition || {};
+        const mode = rec.mode === 'ai' ? `Reconnaissance IA${rec.model ? ` (${rec.model})` : ''}` : 'Mode gratuit (recommandations Vinted)';
+        meta = `<div class="meta">${esc(mode)}</div>`;
+        if (rec.mode !== 'ai' && rec.error) meta += `<div class="msg warn">IA indisponible : ${esc(rec.error)}</div>`;
+        else if (rec.mode !== 'ai' && rec.noKey) meta += '<div class="note">Aucune clé IA configurée : marque et catégorie sont devinées sans IA.</div>';
+        r.getElementById('b').innerHTML = `<div class="now">Ne touche à rien pendant ~1 minute.</div>${meta}`;
       },
       progress(label) {
         const r = ensure();
-        r.getElementById('b').innerHTML = `<div class="note">En cours : <b>${esc(label)}</b>…</div>`;
+        r.getElementById('b').innerHTML = `<div class="now">En cours : <b>${esc(label)}</b>…</div>${meta}`;
       },
       done(result) {
         const r = ensure();
         const failed = (result.fields || []).filter((f) => !f.ok);
-        r.getElementById('t').textContent = result.draftSaved
-          ? failed.length
-            ? `Brouillon enregistré — ${failed.length} point(s) à compléter`
-            : 'Brouillon enregistré ✅'
-          : result.ok
-            ? 'Formulaire rempli'
-            : 'Brouillon NON enregistré';
+        if (result.draftSaved) {
+          const todo = `${failed.length} point${failed.length > 1 ? 's' : ''} à compléter dans le brouillon`;
+          setState(r, failed.length ? 'warn' : 'ok', 'Brouillon enregistré', failed.length ? todo : undefined);
+        } else {
+          setState(r, result.ok ? 'ok' : 'err', result.ok ? 'Formulaire rempli' : 'Brouillon non enregistré');
+        }
         let html = (result.fields || [])
-          .map((f) => `<div class="row"><span class="l">${f.ok ? '✅' : '❌'} ${esc(f.label)}</span><span class="d">${esc(f.detail)}</span></div>`)
+          .map(
+            (f) =>
+              `<div class="row"><span class="ic ${f.ok ? 'ok' : 'ko'}">${f.ok ? ICON.check : ICON.cross}</span><span class="l">${esc(f.label)}</span><span class="d">${esc(f.detail)}</span></div>`,
+          )
           .join('');
-        if (result.message) html += `<div class="${result.ok ? 'note' : 'warn'}">${esc(result.message)}</div>`;
+        if (result.message) html += `<div class="msg ${result.ok ? 'info' : 'warn'}">${esc(result.message)}</div>`;
         html += '<div class="note">Rien n’a été publié : publie toi-même depuis « Mes brouillons » (app ou site Vinted).</div>';
         r.getElementById('b').innerHTML = html;
       },

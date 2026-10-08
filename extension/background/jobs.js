@@ -10,6 +10,7 @@
  * L'état est gardé dans chrome.storage : un redémarrage du service worker
  * en plein remplissage ne perd rien.
  */
+import { base64ToBlob, toJpegTarget } from '../shared/image.js';
 import { GitHubRelay, safeLogin } from '../shared/relay.js';
 import { analyzePhotos, composeListing } from './recognize.js';
 import * as cdp from './cdp.js';
@@ -17,6 +18,8 @@ import * as store from './store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
 const MAX_FILL_MS = 8 * 60 * 1000;
+const SHRINK_ABOVE = 600 * 1024; // au-delà (octets JPEG), la photo est réencodée
+const SHRINK_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 };
 
 let pollBusy = false;
 let relayCache = { key: '', relay: null };
@@ -39,6 +42,58 @@ async function tabExists(tabId) {
   } catch (_e) {
     return false;
   }
+}
+
+/** Taille réelle (octets) des données d'une chaîne base64. */
+const dataBytes = (b64) => Math.floor((String(b64 || '').length * 3) / 4);
+
+/**
+ * Allège les photos trop lourdes (iPhone : ~900 Ko chacune) avant de les
+ * donner à Vinted : réencodage JPEG visé à 400 Ko, 3 photos à la fois. En cas
+ * d'échec, la photo d'origine est gardée. Renvoie un NOUVEAU tableau.
+ */
+export async function shrinkPhotos(photos, { onShrunk } = {}) {
+  const out = [...(photos || [])];
+  let next = 0;
+  const worker = async () => {
+    while (next < out.length) {
+      const i = next;
+      next += 1;
+      const p = out[i];
+      const before = dataBytes(p?.base64);
+      if (before <= SHRINK_ABOVE) continue;
+      try {
+        const r = await toJpegTarget(base64ToBlob(p.base64, p.mime || 'image/jpeg'), SHRINK_TARGET);
+        if (r.base64 && r.bytes < before) {
+          out[i] = { ...p, base64: r.base64, mime: 'image/jpeg' };
+          onShrunk?.(before, r.bytes);
+        }
+      } catch (err) {
+        console.warn('[Revendo] compression photo', i + 1, err);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, out.length) }, worker));
+  return out;
+}
+
+/** shrinkPhotos + une ligne de journal si des photos ont été allégées. */
+async function shrinkAndLog(photos, label) {
+  let count = 0;
+  let from = 0;
+  let to = 0;
+  const out = await shrinkPhotos(photos, {
+    onShrunk: (a, b) => {
+      count += 1;
+      from += a;
+      to += b;
+    },
+  });
+  if (count) {
+    const ko = (n) => Math.round(n / 1024);
+    await store.log('info', `${label} : ${count} photo${count > 1 ? 's' : ''} allégée${count > 1 ? 's' : ''} (${ko(from)} → ${ko(to)} Ko)`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,9 +224,13 @@ async function startRelayJob(relay, job, settings, account) {
   try {
     const read = await relay.readJob(job);
     data = read.data;
-    const photos = read.photos.map((p) => ({ name: p.name, base64: p.base64, mime: 'image/jpeg' }));
+    const originals = read.photos.map((p) => ({ name: p.name, base64: p.base64, mime: 'image/jpeg' }));
+    // L'IA et l'OCR lisent les photos d'origine (étiquettes plus nettes) ;
+    // seules les versions allégées partent sur Vinted. Les deux en parallèle.
+    const shrinking = shrinkAndLog(originals, `Annonce ${job.id}`);
     const hints = { ...(data.hints || {}), price: data.price };
-    const { fields, recognition } = await analyzePhotos({ photos, hints, settings });
+    const { fields, recognition } = await analyzePhotos({ photos: originals, hints, settings });
+    const photos = await shrinking;
     const listing = composeListing(fields, settings, { photoCount: photos.length });
     if (hints.description) listing.description = hints.description; // texte déjà relu sur le PC
     await openFillTab({
@@ -202,13 +261,18 @@ export async function startManualJob({ listing, photos }) {
   const account = (await store.getAccount()) || { login: '', domain: 'www.vinted.fr' };
   const jobId = `manuel-${Date.now()}`;
   await store.setWorkerState({ current: { origin: 'manual', jobId, phase: 'recognizing', startedAt: Date.now() } });
-  await openFillTab({
-    origin: 'manual',
-    jobId,
-    listing: { ...listing, autoSave: listing.autoSave ?? s.worker.autoSave, composeAfterCategory: !listing.category },
-    photos,
-    account,
-  });
+  try {
+    await openFillTab({
+      origin: 'manual',
+      jobId,
+      listing: { ...listing, autoSave: listing.autoSave ?? s.worker.autoSave, composeAfterCategory: !listing.category },
+      photos: await shrinkAndLog(photos, 'Annonce manuelle'),
+      account,
+    });
+  } catch (err) {
+    await store.setWorkerState({ current: null });
+    throw err;
+  }
 }
 
 async function openFillTab({ origin, jobId, jobAccount = '', thumb = '', listing, photos, account }) {
@@ -249,6 +313,8 @@ export async function finalizeTab(tabId, result) {
       ? `Brouillon enregistré sur @${ctx.account.login || 'Vinted'}${missing.length ? ` — à compléter : ${missing.join(', ')}` : ''}`
       : 'Formulaire rempli (brouillon à enregistrer à la main).'
     : result?.message || 'Le brouillon n’a pas pu être enregistré.';
+  const recognition = ctx.listing.recognition || {};
+  const aiError = recognition.error || '';
   const status = {
     state: ok ? 'done' : 'error',
     message,
@@ -264,7 +330,11 @@ export async function finalizeTab(tabId, result) {
       colors: ctx.listing.colors,
       condition: ctx.listing.condition,
       price: ctx.listing.price,
-      mode: ctx.listing.recognition?.mode || '',
+      mode: recognition.mode || '',
+      aiError,
+      aiModel: recognition.model || '',
+      noKey: !!recognition.noKey,
+      photos: { sent: ctx.photos?.length || 0, shown: shownPhotos(result, ctx.photos?.length || 0) },
       seo: ctx.listing.seo?.score ?? null,
       seoTodo: ctx.listing.seo?.todo || [],
     },
@@ -282,13 +352,27 @@ export async function finalizeTab(tabId, result) {
   await chrome.storage.local.set({ rv_last_result: { ...status, jobId: ctx.jobId, origin: ctx.origin, at: Date.now() } });
   const ws = await store.getWorkerState();
   await store.setWorkerState({ current: null, processed: (ws.processed || 0) + (ok ? 1 : 0) });
-  await store.log(ok ? 'info' : 'error', `${ctx.origin === 'relay' ? `Annonce ${ctx.jobId}` : 'Annonce manuelle'} : ${message}`);
+  const aiNote = recognition.mode !== 'ai' && aiError ? ` — IA indisponible (${aiError}), mode gratuit utilisé` : '';
+  await store.log(ok ? 'info' : 'error', `${ctx.origin === 'relay' ? `Annonce ${ctx.jobId}` : 'Annonce manuelle'} : ${message}${aiNote}`);
   if (ok && saved && s.worker.closeTab) {
     setTimeout(() => {
       chrome.windows.remove(ctx.windowId).catch(() => chrome.tabs.remove(tabId).catch(() => null));
     }, 2500);
   }
   setTimeout(() => void pollOnce(), 4000);
+}
+
+/**
+ * Photos réellement visibles sur Vinted : compteur renvoyé par le content
+ * script, sinon le « x/y » de la ligne « Photos » (résultat gardé avant un
+ * rechargement), sinon 0.
+ */
+export function shownPhotos(result, sent) {
+  const n = result?.photos?.shown;
+  if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return Math.min(n, sent || n);
+  const line = (result?.fields || []).find((f) => f.label === 'Photos');
+  const m = /(\d+)\s*\/\s*\d+/.exec(line?.detail || '');
+  return m ? Math.min(Number(m[1]), sent || Number(m[1])) : 0;
 }
 
 async function failCurrent(current, message) {

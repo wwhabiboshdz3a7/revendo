@@ -31,7 +31,11 @@ export function deltaE(a, b) {
 
 const PALETTE = COLORS.filter((c) => c.rgb).map((c) => ({ name: c.name, lab: rgbToLab(c.rgb) }));
 
-export function nearestVintedColor(rgb) {
+/**
+ * Pastille Vinted la plus proche. `castB` = composante bleue (b*) d'un fond
+ * neutre, pour ne pas prendre une dominante bleue de la photo pour du marine.
+ */
+export function nearestVintedColor(rgb, { castB = 0 } = {}) {
   const lab = rgbToLab(rgb);
   let best = null;
   let bestD = Infinity;
@@ -45,6 +49,9 @@ export function nearestVintedColor(rgb) {
       best = p.name;
     }
   }
+  // Bleu marine photographé au téléphone (ex. [42, 46, 56]) : plus proche du noir que de la
+  // pastille « Marine », mais nettement bleuté (b* négatif), contrairement à un vrai noir.
+  if (best === 'Noir' && lab[0] >= 6 && lab[2] - castB <= -6 && lab[2] < lab[1] - 4) return 'Marine';
   return best;
 }
 
@@ -132,19 +139,25 @@ export function dominantColors(pixels, width, height, { k = 4 } = {}) {
     g.acc[2] += s.rgb[2] * s.w;
     total += s.w;
   });
+  // Dominante bleue de la photo, estimée sur un fond homogène et presque neutre (mur blanc, drap gris).
+  const castB = bgSpread > 0.6 && Math.hypot(bgLab[1], bgLab[2]) < 12 ? Math.min(0, bgLab[2]) : 0;
   const byName = new Map();
   for (const g of groups.values()) {
-    const name = nearestVintedColor(g.acc.map((v) => v / g.W));
+    const name = nearestVintedColor(g.acc.map((v) => v / g.W), { castB });
     byName.set(name, (byName.get(name) || 0) + g.W / total);
   }
   return [...byName.entries()].map(([name, share]) => ({ name, share })).sort((a, b) => b.share - a.share);
 }
+
+/** Teintes voisines que l'ombre ou l'éclairage séparent sur une photo : une seule couleur réelle. */
+const SHADE_PAIRS = new Set(['Marine|Noir', 'Bleu|Marine', 'Blanc|Crème', 'Beige|Crème']);
+const sameShade = (a, b) => SHADE_PAIRS.has([a, b].sort().join('|'));
 
 /** 1 ou 2 couleurs Vinted pour l'annonce. */
 export function pickListingColors(dominant) {
   if (!dominant?.length) return [];
   const out = [dominant[0].name];
   const second = dominant[1];
-  if (second && second.share >= 0.28 && second.name !== dominant[0].name) out.push(second.name);
+  if (second && second.share >= 0.28 && second.name !== dominant[0].name && !sameShade(second.name, dominant[0].name)) out.push(second.name);
   return out;
 }

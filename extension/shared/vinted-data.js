@@ -191,7 +191,11 @@ export const CATEGORY_DEFS = [
   { kw: 'Décoration', title: 'Décoration', match: ['deco', 'vase', 'cadre', 'bougie'], emoji: '🏠', package: 'Moyen', tags: ['deco', 'maison', 'interieur'] },
 ];
 
-/** Marques fréquentes (détection par OCR des étiquettes en mode gratuit). */
+/**
+ * Marques fréquentes, avec leur orthographe exacte : détection dans le texte
+ * des étiquettes (OCR, transcription de l'IA) et correction de l'orthographe
+ * d'une marque lue (canonicalBrand). Éviter les noms de 1 ou 2 lettres.
+ */
 export const BRANDS = [
   'Nike', 'Adidas', 'Zara', 'H&M', 'Shein', 'Mango', 'Bershka', 'Pull&Bear', 'Stradivarius', 'Kiabi',
   'Jennyfer', 'Promod', 'Camaïeu', 'Naf Naf', "Levi's", 'Lacoste', 'Ralph Lauren', 'Polo Ralph Lauren',
@@ -221,7 +225,97 @@ export const BRANDS = [
   'IKKS', 'Sergent Major', 'Catimini', 'Absorba', 'Orchestra', 'Benetton', 'United Colors of Benetton',
   'Disney', 'Lego', 'Playmobil', 'Fisher-Price', 'Vtech', 'Apple', 'Samsung', 'Sony', 'Nintendo',
   'Salsa', 'Jott', 'Schott', 'Redskins', 'Ünkut', 'Sinsay', 'Reserved', 'New Look', 'River Island',
-  'Topshop', 'Mister K', 'Jacquemus', 'Golden Goose', 'Alexander McQueen', 'Miu Miu', 'Bottega Veneta',
+  'Topshop', 'Mister K', 'Golden Goose', 'Alexander McQueen', 'Miu Miu', 'Bottega Veneta',
+  // Chic / casual français et européen
+  'Gant', 'Tommy Jeans', 'Calvin Klein Jeans', 'Lauren Ralph Lauren', 'Eden Park', 'Serge Blanco', 'Façonnable',
+  'Hackett', 'American Vintage', 'Father & Sons', 'Devred', 'Armand Thiery', 'Damart', 'Bréal', 'Tex', 'In Extenso',
+  'Saint James', 'Armor Lux', 'Le Slip Français', 'Faguo', 'Caroll', 'Kookaï', 'Gaastra', 'Chevignon', 'Oxbow',
+  'Lee Cooper', 'Mexx', 'Springfield', 'New Yorker', 'Princesse tam.tam', 'Lefties', 'Oysho', 'Tally Weijl', 'Noisy May', 'Jacqueline de Yong',
+  'Gerard Darel', 'Vanessa Bruno', 'Sinéquanone', 'Cop Copine', 'Agnès b.', 'Maison Kitsuné', 'Acne Studios',
+  'Bellerose', 'Balmain', 'Karl Lagerfeld', 'Moschino', 'Love Moschino', 'Liu Jo', 'Pinko', 'Max Mara', 'Paul Smith',
+  'Ted Baker', 'AllSaints', 'Hugo', 'C.P. Company', 'Kangol', 'New Era',
+  // Sport, outdoor, glisse
+  'Hoka', 'Saucony', 'Mizuno', 'Merrell', 'Palladium', 'Caterpillar', "Arc'teryx", 'Aigle', 'K-Way', 'Helly Hansen',
+  'Jack Wolfskin', 'Lafuma', 'Rossignol', 'Millet', 'Canada Goose', 'Pyrenex', 'Woolrich', 'Peak Performance',
+  'Quiksilver', 'Roxy', 'Billabong', 'Rip Curl', "O'Neill", 'Volcom', 'DC Shoes', 'Diadora', 'Hummel', 'Lotto',
+  'Onitsuka Tiger', 'Kipsta', 'Wedze', 'Forclaz', 'Tribord', 'Nabaiji', 'Artengo',
+  // Chaussures
+  'Skechers', 'Crocs', 'Havaianas', 'Superga', 'Paraboot', 'Sebago', 'Camper', 'Buffalo', 'Steve Madden',
+  'Mellow Yellow',
+  // Enfants et marques de distributeurs (très fréquentes sur Vinted)
+  'Name It', 'Mayoral', 'Boboli', 'Obaïbi', 'Tartine et Chocolat', "Bout'Chou", 'Carrément Beau', 'Billieblush',
+  'Esmara', 'Livergy', 'Crivit', 'Lupilu', 'Pepperts', 'Tissaia', 'Atmosphere', 'Denim Co', 'Monoprix',
+];
+
+/**
+ * Autres écritures d'une marque (clé = écriture « slug » : minuscules sans
+ * accents ni ponctuation) → nom EXACT de BRANDS. Ne servent qu'à ramener une
+ * marque déjà lue (IA, saisie) à la bonne orthographe, jamais à la deviner.
+ */
+export const BRAND_ALIASES = {
+  levistrauss: "Levi's",
+  levistraussco: "Levi's",
+  northface: 'The North Face',
+  tnf: 'The North Face',
+  stussy: 'Stüssy',
+  tommy: 'Tommy Hilfiger',
+  hilfiger: 'Tommy Hilfiger',
+  hilfigerdenim: 'Tommy Hilfiger',
+  ck: 'Calvin Klein',
+  ckjeans: 'Calvin Klein Jeans',
+  polobyralphlauren: 'Polo Ralph Lauren',
+  ralphlaurenpolo: 'Polo Ralph Lauren',
+  hennesmauritz: 'H&M',
+  handm: 'H&M',
+  pullandbear: 'Pull&Bear',
+  jackandjones: 'Jack & Jones',
+  zadigetvoltaire: 'Zadig & Voltaire',
+  dolceandgabbana: 'Dolce & Gabbana',
+  dg: 'Dolce & Gabbana',
+  abercrombie: 'Abercrombie & Fitch',
+  abercrombieandfitch: 'Abercrombie & Fitch',
+  ysl: 'Yves Saint Laurent',
+  docmartens: 'Dr. Martens',
+  doctormartens: 'Dr. Martens',
+  airwair: 'Dr. Martens',
+  gstar: 'G-Star Raw',
+  underarmor: 'Under Armour',
+  lecoq: 'Le Coq Sportif',
+  coqsportif: 'Le Coq Sportif',
+  tapealoeil: "Tape à l'œil",
+  dupareilaumeme: 'DPAM',
+  airjordan: 'Jordan',
+  ami: 'Ami Paris',
+  fatherandsons: 'Father & Sons',
+  hugoboss: 'Hugo Boss',
+  vansoffthewall: 'Vans',
+  converseallstar: 'Converse',
+  chucktaylor: 'Converse',
+  hokaoneone: 'Hoka',
+  cat: 'Caterpillar',
+  kway: 'K-Way',
+  armorlux: 'Armor Lux',
+  stjames: 'Saint James',
+  lacostelive: 'Lacoste',
+  princessetamtam: 'Princesse tam.tam',
+  agnesb: 'Agnès b.',
+  sinequanone: 'Sinéquanone',
+  jdy: 'Jacqueline de Yong',
+  nameit: 'Name It',
+  newyorker: 'New Yorker',
+};
+
+/**
+ * Marques qui sont aussi des mots courants (« dry clean ONLY », « GORE-TEX »,
+ * « all rights RESERVED »…) : en lecture d'étiquette (OCR, texte libre), on ne
+ * les retient que si elles occupent seules une ligne, et jamais en détection
+ * approximative.
+ */
+export const BRAND_AMBIGUOUS = [
+  'Only', 'Object', 'Selected', 'Pieces', 'Vila', 'Essentials', 'Represent', 'Boss', 'Hugo', 'Lee', 'Coach',
+  'Palace', 'Champion', 'Disney', 'Apple', 'Sony', 'Gap', 'COS', 'Jules', 'Brice', 'Morgan', 'Salsa', 'Reserved',
+  'Supreme', 'Guess', 'Esprit', 'Replay', 'Weekday', 'Off-White', 'New Look', 'Tex', 'Camper', 'Buffalo', 'Lotto',
+  'Millet', 'Aigle', 'Caterpillar', 'Name It', 'New Era', 'Atmosphere', 'Denim Co', 'Jott', 'Lego',
 ];
 
 export const RAYON_TAGS = {

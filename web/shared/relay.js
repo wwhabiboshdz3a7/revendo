@@ -1,5 +1,6 @@
 /**
- * Revendo — relais téléphone ⇄ PC stocké dans un dépôt GitHub PRIVÉ.
+ * Revendo — relais téléphone ⇄ PC stocké dans un dépôt GitHub (privé ou
+ * public : les photos n'y restent que le temps du traitement).
  *
  * Chaque écriture est UN commit atomique (API Git Data : blobs → tree →
  * commit → mise à jour de la branche en fast-forward). Si un autre appareil
@@ -66,8 +67,39 @@ export function newJobId(date = new Date()) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Applique `fn` à chaque élément avec au plus `limit` appels simultanés.
+ * Les résultats gardent l'ordre des éléments. À la première erreur, plus
+ * aucun nouvel appel n'est lancé et l'erreur est propagée.
+ */
+export async function mapLimit(items, limit, fn) {
+  const list = [...(items || [])];
+  const out = new Array(list.length);
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < list.length) {
+      const i = next;
+      next += 1;
+      try {
+        out[i] = await fn(list[i], i);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, list.length)) }, worker));
+  return out;
+}
+
+/** Erreur passagère (réseau coupé, GitHub 5xx) : un nouvel essai a des chances de passer. */
+export function isTransient(err) {
+  return err instanceof RelayError && (err.code === 'network' || err.status >= 500);
+}
+
 export class GitHubRelay {
-  constructor({ owner, repo, branch = 'main', token, fetchImpl, apiBase = 'https://api.github.com' } = {}) {
+  constructor({ owner, repo, branch = 'main', token, fetchImpl, apiBase = 'https://api.github.com', retryDelayMs = 800 } = {}) {
     if (!owner || !repo || !token) throw new RelayError('Relais incomplet (propriétaire, dépôt ou token manquant).', { code: 'config' });
     this.owner = owner.trim();
     this.repo = repo.trim();
@@ -78,6 +110,8 @@ export class GitHubRelay {
     this.refEtag = null;
     this.refSha = null;
     this.blobCache = new Map(); // sha → texte (fichiers JSON)
+    this.treeOf = new Map(); // sha d'un commit → sha de son arbre (immuable)
+    this.retryDelayMs = retryDelayMs; // attente avant le 1er nouvel essai d'un envoi de photo
   }
 
   // -------------------------------------------------------------------------
@@ -104,7 +138,12 @@ export class GitHubRelay {
     }
     if (res.status === 304 || allow.includes(res.status)) return { status: res.status, res, data: null };
     let data = null;
-    const text = await res.text();
+    let text = '';
+    try {
+      text = await res.text();
+    } catch (err) {
+      throw new RelayError(`Réseau indisponible (${err?.message || err}).`, { code: 'network', status: res.status >= 500 ? res.status : 0 });
+    }
     try {
       data = text ? JSON.parse(text) : null;
     } catch (_e) {
@@ -143,13 +182,28 @@ export class GitHubRelay {
     return { sha, changed };
   }
 
-  async treeOfCommit(commitSha) {
+  /** Sha de l'arbre d'un commit (1 requête, puis mis en cache : un commit ne change jamais). */
+  async treeShaOf(commitSha) {
+    if (this.treeOf.has(commitSha)) return this.treeOf.get(commitSha);
     const { data: commit } = await this.api('GET', `/git/commits/${commitSha}`);
-    const { data: tree } = await this.api('GET', `/git/trees/${commit.tree.sha}?recursive=1`);
+    const treeSha = commit?.tree?.sha;
+    if (!treeSha) throw new RelayError('Réponse GitHub inattendue (commit).');
+    this.rememberTree(commitSha, treeSha);
+    return treeSha;
+  }
+
+  rememberTree(commitSha, treeSha) {
+    this.treeOf.set(commitSha, treeSha);
+    if (this.treeOf.size > 200) this.treeOf.delete(this.treeOf.keys().next().value);
+  }
+
+  async treeOfCommit(commitSha) {
+    const treeSha = await this.treeShaOf(commitSha);
+    const { data: tree } = await this.api('GET', `/git/trees/${treeSha}?recursive=1`);
     if (tree.truncated) throw new RelayError('Dépôt trop volumineux : lance « Compacter l\'historique » dans les réglages.');
     const entries = new Map();
     for (const e of tree.tree || []) if (e.type === 'blob') entries.set(e.path, { sha: e.sha, size: e.size });
-    return { commitSha, treeSha: commit.tree.sha, entries };
+    return { commitSha, treeSha, entries };
   }
 
   async readBlobBase64(sha) {
@@ -165,9 +219,28 @@ export class GitHubRelay {
     return JSON.parse(text);
   }
 
-  async createBlob(base64) {
-    const { data } = await this.api('POST', '/git/blobs', { content: base64, encoding: 'base64' });
-    return data.sha;
+  /**
+   * Envoie une photo (base64) comme blob Git et renvoie son sha. Le téléphone
+   * s'en sert pour envoyer chaque photo dès qu'elle est prête, avant même le
+   * clic « Envoyer ». Deux nouveaux essais (attente croissante) si le réseau
+   * coupe ou si GitHub répond 5xx ; les autres erreurs remontent tout de suite.
+   */
+  async uploadBlob(base64, { retries = 2 } = {}) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const { data } = await this.api('POST', '/git/blobs', { content: base64, encoding: 'base64' });
+        if (!data?.sha) throw new RelayError('Réponse GitHub inattendue (photo).');
+        return data.sha;
+      } catch (err) {
+        if (!isTransient(err) || attempt >= retries) throw err;
+        await sleep(this.retryDelayMs * 2 ** attempt * (1 + Math.random() * 0.3));
+      }
+    }
+  }
+
+  /** Ancien nom de uploadBlob (gardé pour compatibilité). */
+  createBlob(base64) {
+    return this.uploadBlob(base64);
   }
 
   /**
@@ -175,18 +248,22 @@ export class GitHubRelay {
    * ({ entries: Map(path → {sha}) }) et renvoie la liste des changements :
    *   { path, content }  (texte UTF-8) | { path, sha } (blob existant) | { path, delete: true }
    * Elle peut lever ConflictError pour annuler (ex. job déjà pris).
+   * `needSnapshot: false` : `build` n'a pas besoin de l'arborescence (simple
+   * ajout de fichiers) → on évite la lecture récursive de l'arbre, seul le sha
+   * de l'arbre de la tête est lu (snapshot.entries vaut alors null et une
+   * suppression est envoyée telle quelle : le chemin doit exister).
    */
-  async commit(build, message, { attempts = 6 } = {}) {
+  async commit(build, message, { attempts = 6, needSnapshot = true } = {}) {
     let lastErr = null;
     for (let i = 0; i < attempts; i += 1) {
       const { sha: head } = await this.headSha({ useCache: false });
-      const snap = await this.treeOfCommit(head);
+      const snap = needSnapshot ? await this.treeOfCommit(head) : { commitSha: head, treeSha: await this.treeShaOf(head), entries: null };
       const changes = await build(snap);
       if (!changes || !changes.length) return { committed: false, snapshot: snap };
       const tree = [];
       for (const c of changes) {
         if (c.delete) {
-          if (snap.entries.has(c.path)) tree.push({ path: c.path, mode: '100644', type: 'blob', sha: null });
+          if (!snap.entries || snap.entries.has(c.path)) tree.push({ path: c.path, mode: '100644', type: 'blob', sha: null });
         } else if (c.sha) {
           tree.push({ path: c.path, mode: '100644', type: 'blob', sha: c.sha });
         } else {
@@ -196,6 +273,7 @@ export class GitHubRelay {
       if (!tree.length) return { committed: false, snapshot: snap };
       const { data: newTree } = await this.api('POST', '/git/trees', { base_tree: snap.treeSha, tree });
       const { data: newCommit } = await this.api('POST', '/git/commits', { message, tree: newTree.sha, parents: [head] });
+      this.rememberTree(newCommit.sha, newTree.sha);
       try {
         await this.api('PATCH', `/git/refs/heads/${encodeURIComponent(this.branch)}`, { sha: newCommit.sha, force: false });
         this.refSha = newCommit.sha;
@@ -307,8 +385,8 @@ export class GitHubRelay {
   async readJob(job) {
     const data = job.data || (job.jobSha ? await this.readJsonBlob(job.jobSha) : null);
     if (!data) throw new RelayError(`Job ${job.id} illisible.`);
-    const photos = [];
-    for (const p of job.photos) photos.push({ name: p.name, base64: await this.readBlobBase64(p.sha) });
+    // 4 photos téléchargées à la fois, dans l'ordre d'origine (01.jpg, 02.jpg…).
+    const photos = await mapLimit(job.photos, 4, async (p) => ({ name: p.name, base64: await this.readBlobBase64(p.sha) }));
     return { data, photos };
   }
 
@@ -320,29 +398,29 @@ export class GitHubRelay {
     const key = safeLogin(info.login);
     const path = `accounts/${key}.json`;
     const content = JSON.stringify({ ...info, login: info.login, updatedAt: new Date().toISOString() }, null, 2);
-    return this.commit(() => [{ path, content }], `compte ${key} en ligne`);
+    return this.commit(() => [{ path, content }], `compte ${key} en ligne`, { needSnapshot: false });
   }
 
   /**
-   * Crée un job : photos = [{ base64 }] (JPEG). Les blobs sont envoyés avant
-   * le commit (en parallèle limité), le commit final est atomique.
+   * Crée un job. photos = [{ sha }] (blob déjà envoyé avec uploadBlob, cas du
+   * téléphone qui envoie chaque photo dès qu'elle est prête) ou [{ base64 }]
+   * (JPEG envoyé ici, 4 à la fois). Puis UN commit atomique, sans relire
+   * l'arborescence. onProgress(envoyées, total) suit l'envoi des photos.
    */
   async createJob({ account, price, hints = {}, photos = [], thumb = '', createdBy = 'phone', onProgress } = {}) {
     if (!account) throw new RelayError('Compte cible manquant.');
     if (!photos.length) throw new RelayError('Ajoute au moins une photo.');
     const id = newJobId();
     const key = safeLogin(account);
-    const shas = new Array(photos.length);
-    let done = 0;
-    const queue = photos.map((p, i) => async () => {
-      shas[i] = await this.createBlob(p.base64);
+    let done = photos.filter((p) => p?.sha).length;
+    const shas = await mapLimit(photos, 4, async (p) => {
+      if (p?.sha) return p.sha;
+      if (!p?.base64) throw new RelayError('Photo vide : reprends-la.');
+      const sha = await this.uploadBlob(p.base64);
       done += 1;
       onProgress?.(done, photos.length);
+      return sha;
     });
-    const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
-      while (queue.length) await queue.shift()();
-    });
-    await Promise.all(workers);
     const names = shas.map((_, i) => `${String(i + 1).padStart(2, '0')}.jpg`);
     const job = {
       id,
@@ -361,6 +439,7 @@ export class GitHubRelay {
         { path: `jobs/${key}/${id}/job.json`, content: JSON.stringify(job, null, 2) },
       ],
       `nouvelle annonce pour ${key} (${photos.length} photo${photos.length > 1 ? 's' : ''})`,
+      { needSnapshot: false },
     );
     return { id, job };
   }
@@ -384,7 +463,11 @@ export class GitHubRelay {
 
   async writeStatus(jobId, status) {
     const path = `status/${jobId}.json`;
-    return this.commit(() => [{ path, content: JSON.stringify({ ...status, id: jobId, updatedAt: new Date().toISOString() }, null, 2) }], `statut ${jobId} : ${status.state}`);
+    return this.commit(
+      () => [{ path, content: JSON.stringify({ ...status, id: jobId, updatedAt: new Date().toISOString() }, null, 2) }],
+      `statut ${jobId} : ${status.state}`,
+      { needSnapshot: false },
+    );
   }
 
   /** Fin de job : statut final + (si succès) suppression des photos, en UN commit. */
