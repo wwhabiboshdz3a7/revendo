@@ -3,7 +3,7 @@
   "name": "Revendo — brouillons Vinted",
   "short_name": "Revendo",
   "description": "Prépare tes annonces Vinted depuis le téléphone : photos + prix, l'extension reconnaît l'article et crée le brouillon sur le bon compte. Ne publie jamais à ta place.",
-  "version": "3.2.2",
+  "version": "3.3.0",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Ouvrir Revendo",

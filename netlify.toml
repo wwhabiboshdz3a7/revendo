@@ -1,0 +1,8 @@
+# Déploiement Netlify du dashboard téléphone (dossier web/), si le site est
+# relié à ce dépôt GitHub. Sinon : glisser le dossier web/ sur app.netlify.com/drop.
+[build]
+  base = "web"
+  publish = "."
+  # Le dépôt reçoit aussi les commits du relais (comptes, annonces, statuts) :
+  # on ne redéploie que si quelque chose a changé dans web/.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- ."
