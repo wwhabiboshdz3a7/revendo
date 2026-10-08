@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#09b1ba" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Revendo" />
+<title>Revendo</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <!-- ========== Connexion ========== -->
+  <section id="setupView" class="view hidden">
+    <div class="setup">
+      <div class="logo">R</div>
+      <h1>Revendo</h1>
+      <p>Connecte ce téléphone au PC : sur le PC, ouvre l'extension → <b>Réglages</b> → <b>Afficher le QR code</b>, puis scanne-le avec l'appareil photo.</p>
+      <p class="muted">Ou colle le code de connexion :</p>
+      <textarea id="codeInput" rows="4" placeholder="REV1.…"></textarea>
+      <button id="connectBtn" class="primary">Connecter</button>
+      <p id="setupStatus" class="msg"></p>
+    </div>
+  </section>
+
+  <!-- ========== Accueil ========== -->
+  <section id="homeView" class="view hidden">
+    <header class="top">
+      <div>
+        <h1 id="hello">Salut 👋</h1>
+        <p id="sub" class="muted">Photos + prix + compte, le PC fait le reste.</p>
+      </div>
+      <button id="settingsBtn" class="icon" aria-label="Réglages">⚙️</button>
+    </header>
+
+    <div class="accounts" id="accountsRow"></div>
+
+    <button id="newBtn" class="primary big">📸 Nouvelle annonce</button>
+
+    <div class="section-title">
+      <h2>Suivi</h2>
+      <button id="refreshBtn" class="link">↻ Actualiser</button>
+    </div>
+    <div id="queue" class="queue"></div>
+    <p id="homeMsg" class="msg"></p>
+  </section>
+
+  <!-- ========== Nouvelle annonce ========== -->
+  <section id="newView" class="view hidden">
+    <header class="top sheet-top">
+      <button id="backBtn" class="link">← Retour</button>
+      <h1>Nouvelle annonce</h1>
+      <span></span>
+    </header>
+
+    <div class="block">
+      <div class="photos" id="photoGrid"></div>
+      <label class="add-photos" id="addPhotos">
+        <input type="file" id="photoInput" accept="image/*" multiple />
+        <span>＋ Ajouter des photos</span>
+        <small>Mets une photo de l'étiquette (taille / composition) : la reconnaissance sera meilleure.</small>
+      </label>
+    </div>
+
+    <div class="block">
+      <label for="price">Prix</label>
+      <div class="price-box"><input type="text" id="price" inputmode="decimal" placeholder="0" autocomplete="off" /><span>€</span></div>
+      <p id="priceCheck" class="hint"></p>
+    </div>
+
+    <div class="block">
+      <label>Compte Vinted</label>
+      <div class="chips" id="accountChips"></div>
+    </div>
+
+    <div class="block">
+      <label>Rayon</label>
+      <div class="chips" id="rayonChips"></div>
+    </div>
+
+    <details class="block more">
+      <summary>Préciser (optionnel)</summary>
+      <label for="brand">Marque</label>
+      <input type="text" id="brand" placeholder="Laisse vide : reconnue sur les photos" autocomplete="off" />
+      <label for="size">Taille</label>
+      <input type="text" id="size" placeholder="Laisse vide : lue sur l'étiquette" autocomplete="off" />
+      <label>État</label>
+      <div class="chips" id="conditionChips"></div>
+      <label for="notes">Note pour l'annonce</label>
+      <input type="text" id="notes" placeholder="Ex : petite tache sur la manche" autocomplete="off" />
+    </details>
+
+    <div class="send-bar">
+      <button id="sendBtn" class="primary big">Envoyer au PC</button>
+      <p id="sendStatus" class="msg"></p>
+    </div>
+  </section>
+
+  <!-- ========== Détail / réglages (feuille) ========== -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-card">
+      <button id="sheetClose" class="icon close" aria-label="Fermer">✕</button>
+      <div id="sheetBody"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

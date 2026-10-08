@@ -1,0 +1,13 @@
+Revendo v3.2.2 — installation de l'extension (Chrome ou Brave, Windows ou Mac)
+
+1. Dézippe revendo-extension-v3.2.2.zip : tu obtiens le dossier « revendo-extension-v3.2.2 ».
+   Le fichier manifest.json est directement dedans.
+2. Ouvre chrome://extensions (ou brave://extensions) et active « Mode développeur ».
+3. Si une ancienne version de Revendo est installée : supprime-la (ou clique 🔄 après avoir
+   remplacé ses fichiers).
+4. « Charger l'extension non empaquetée » → sélectionne le dossier « revendo-extension-v3.2.2 »
+   lui-même (celui qui contient manifest.json), puis « Sélectionner ».
+5. À refaire dans chaque profil Chrome (un profil = un compte Vinted).
+
+Le dashboard téléphone est dans l'autre zip (revendo-web-v3.2.2.zip) : dézippe-le et glisse le
+dossier « revendo-web-v3.2.2 » sur https://app.netlify.com/drop (ou dans l'onglet Deploys de ton site).
