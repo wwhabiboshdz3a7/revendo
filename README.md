@@ -14,17 +14,17 @@ téléphone) et la **base de données** qui les relie.
 
 | Quoi | Où ça va | Fichier |
 | --- | --- | --- |
-| Extension (le « robot » du PC) | Chrome / Brave, dans chaque profil | [`dist/revendo-extension-v3.4.0.zip`](dist/revendo-extension-v3.4.0.zip) |
-| Dashboard téléphone | Netlify | [`dist/revendo-web-v3.4.0.zip`](dist/revendo-web-v3.4.0.zip) |
+| Extension (le « robot » du PC) | Chrome / Brave, dans chaque profil | [`dist/revendo-extension-v3.5.0.zip`](dist/revendo-extension-v3.5.0.zip) |
+| Dashboard téléphone | Netlify | [`dist/revendo-web-v3.5.0.zip`](dist/revendo-web-v3.5.0.zip) |
 
 Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`web/`](web).
 
 ### Installer l'extension
 
-1. Dézippe `revendo-extension-v3.4.0.zip` (Windows : clic droit → « Extraire tout… »).
-   Le dossier `revendo-extension-v3.4.0` obtenu contient directement `manifest.json`.
+1. Dézippe `revendo-extension-v3.5.0.zip` (Windows : clic droit → « Extraire tout… »).
+   Le dossier `revendo-extension-v3.5.0` obtenu contient directement `manifest.json`.
 2. Ouvre `chrome://extensions` (ou `brave://extensions`) et active **Mode développeur**.
-3. **Charger l'extension non empaquetée** → choisis le dossier `revendo-extension-v3.4.0`
+3. **Charger l'extension non empaquetée** → choisis le dossier `revendo-extension-v3.5.0`
    (celui qui contient `manifest.json`). « Fichier manifeste manquant » = mauvais
    dossier : si tu as téléchargé tout le dépôt, choisis son sous-dossier `extension/`.
    Pour mettre à jour une ancienne version : remplace ses fichiers puis clique 🔄
@@ -40,8 +40,8 @@ Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`
 
 ### Mettre le dashboard téléphone sur Netlify
 
-- **Le plus simple** : dézippe `revendo-web-v3.4.0.zip` et glisse le dossier
-  `revendo-web-v3.4.0` (qui contient directement `index.html`) sur [app.netlify.com/drop](https://app.netlify.com/drop)
+- **Le plus simple** : dézippe `revendo-web-v3.5.0.zip` et glisse le dossier
+  `revendo-web-v3.5.0` (qui contient directement `index.html`) sur [app.netlify.com/drop](https://app.netlify.com/drop)
   (ou dans l'onglet *Deploys* du site existant pour le mettre à jour).
 - **Ou relié à GitHub** : *Add new site → Import from Git* → ce dépôt, branche
   qui contient le code. `netlify.toml` publie le dossier `web/` et ne
@@ -89,8 +89,44 @@ comme une app.
     dans l'ombre reste marine).
 - **Remplissage** (`content/vinted-fill.js`) : photos → titre → description
   → prix → catégorie → marque → taille → état → couleurs → matières → colis,
-  puis « Sauvegarder le brouillon ». Le bouton « Ajouter » (publier) n'est
-  jamais cliqué, et le compte connecté est revérifié avant d'enregistrer.
+  vérification de tous les champs, puis « Sauvegarder le brouillon ». Le
+  bouton « Ajouter » (publier) n'est jamais cliqué, et le compte connecté est
+  revérifié avant d'enregistrer.
+- **Un seul profil à la fois** : `locks/robot.json` dans le relais. Le verrou
+  est pris dans le même commit que la réservation du job, rendu dans le commit
+  de fin, et expire seul après 15 min (PC éteint en plein travail).
+- **Nouvels essais** : page Vinted rechargée (2 fois au plus) quand elle est en
+  panne ; annonce ratée pour une raison passagère → statut `retry`, reprise
+  automatique 3 min plus tard (2 essais au total).
+
+## Nouveautés de la v3.5.0
+
+Cause des échecs du 10/10 : plusieurs profils Chrome remplissaient Vinted en
+même temps sur le même PC (focus volé, processeur saturé par la lecture des
+étiquettes) → formulaire Vinted pas chargé, photos refusées, menu catégorie
+qui ne s'ouvre pas. Toutes les annonces ratées ce jour-là l'ont été pendant un
+chevauchement.
+
+- **Un seul profil remplit Vinted à la fois** (verrou dans le relais) ; les
+  autres affichent « En attente de son tour » et prennent la suite.
+- **Nouvel essai automatique** d'une annonce ratée (3 min plus tard, page
+  neuve), affiché « Nouvel essai prévu » sur le téléphone et le PC ; pas de
+  nouvel essai si le compte est déconnecté ou l'onglet fermé à la main.
+- **Page Vinted rechargée** si le formulaire n'apparaît pas, si des photos sont
+  refusées ou si le menu catégorie ne s'ouvre pas ; **captcha** : 3 min
+  d'attente puis rechargement.
+- **Focus émulé** : une fenêtre ouverte par-dessus ne referme plus les menus.
+- **Catégorie** : jusqu'à 35 s d'attente des recommandations Vinted, menu
+  rouvert s'il se referme.
+- **Chaque champ retenté** s'il rate, et **tout revérifié avant
+  d'enregistrer** (champs effacés par Vinted remplis de nouveau).
+- **Tailles bilingues** des étiquettes (L/G, S/P, XL TG/XG, 2X).
+- **À mettre à jour partout** : l'extension dans CHAQUE profil Chrome (un profil
+  resté en 3.4.0 ignore le verrou ; le téléphone et le dashboard le signalent
+  « extension à mettre à jour ») et le site Netlify du téléphone.
+- Banc d'essai à pannes injectées : 17 scénarios (16 pannes + le cas nominal) × 3 répétitions par
+  version — 3.3.0 : 24 %, 3.4.0 : 41 %, **3.5.0 : 100 %** d'annonces complètes. Détail, chronologie
+  du 10/10 et graphiques 3D : [rapport de fiabilité (PDF)](docs/Revendo-rapport-fiabilite-v3.5.0.pdf).
 
 ## Nouveautés de la v3.4.0
 

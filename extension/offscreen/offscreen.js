@@ -11,7 +11,10 @@
  * noir sur blanc et redressées.
  */
 /* global Tesseract */
+import { detectBrand, detectBrandFuzzy } from '../shared/listing.js';
 import { prepareForOcr, readPhoto } from './label-ocr.js';
+
+const isBrand = (text) => !!(detectBrand(text) || detectBrandFuzzy(text));
 
 let workerPromise = null;
 let currentPsm = '11';
@@ -107,7 +110,7 @@ async function readOne(worker, msg) {
       const { data } = await worker.recognize(source, {}, { text: true, blocks: true });
       return data;
     };
-    return await readPhoto({ img: pixelsOf(bitmap), recognize, label: !!msg.label, deadline: Number(msg.deadline) || Infinity });
+    return await readPhoto({ img: pixelsOf(bitmap), recognize, label: !!msg.label, deadline: Number(msg.deadline) || Infinity, isBrand });
   } finally {
     bitmap.close();
   }

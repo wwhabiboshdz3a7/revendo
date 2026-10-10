@@ -9,6 +9,8 @@ import { analyzePhotos, composeListing } from './recognize.js';
 import * as store from './store.js';
 
 const DASHBOARD = 'dashboard/dashboard.html';
+/** Rechargements de la page Vinted pour une même annonce (page qui ne charge pas, captcha, photos refusées…). */
+export const MAX_PAGE_RETRIES = 2;
 const VINTED_RX = /^https:\/\/(www\.)?vinted\.(fr|com|de|es|it|pt|nl|be|co\.uk|pl|at|lu)\//;
 
 // ---------------------------------------------------------------------------
@@ -66,16 +68,54 @@ const handlers = {
     const ctx = sender.tab?.id ? await store.getTabJob(sender.tab.id) : null;
     if (!ctx || ctx.started) return { job: null };
     const { photos, ...rest } = ctx;
-    return { job: { ...rest.listing, origin: rest.origin, jobId: rest.jobId, account: rest.account, photoCount: photos.length } };
+    return {
+      job: {
+        ...rest.listing,
+        origin: rest.origin,
+        jobId: rest.jobId,
+        account: rest.account,
+        photoCount: photos.length,
+        pageAttempt: (rest.pageAttempts || 0) + 1,
+        maxPageAttempts: MAX_PAGE_RETRIES + 1,
+        retryReasons: rest.retryReasons || [],
+      },
+    };
+  },
+  /**
+   * La page Vinted est en panne (formulaire absent, captcha, photos refusées,
+   * menu mort) : on la recharge et le remplissage reprend depuis le début,
+   * MAX_PAGE_RETRIES fois au plus. Renvoie { retry: false } quand c'est épuisé.
+   */
+  async RV_RETRY_PAGE(msg, sender) {
+    const tabId = sender.tab?.id;
+    const ctx = tabId ? await store.getTabJob(tabId) : null;
+    if (!ctx) return { retry: false };
+    const n = (ctx.pageAttempts || 0) + 1;
+    if (n > MAX_PAGE_RETRIES) return { retry: false, attempts: n - 1 };
+    const reason = String(msg.reason || 'page en panne').slice(0, 200);
+    await store.setTabJob(tabId, { ...ctx, started: false, pageAttempts: n, retryReasons: [...(ctx.retryReasons || []), reason] });
+    // Rechargement programmé d'abord (le content script s'arrête dès notre réponse) ; chaque page
+    // neuve a son propre délai de remplissage, et le verrou est prolongé sans faire attendre.
+    setTimeout(() => {
+      chrome.tabs.reload(tabId, { bypassCache: true }).catch(() => null);
+    }, Math.max(0, Number(msg.delayMs) || 500));
+    const ws = await store.getWorkerState();
+    if (ws.current?.tabId === tabId) await store.setWorkerState({ current: { ...ws.current, startedAt: Date.now() } });
+    await store.log('warn', `${ctx.origin === 'relay' ? `Annonce ${ctx.jobId}` : 'Annonce manuelle'} : rechargement de Vinted ${n}/${MAX_PAGE_RETRIES} (${reason})`);
+    const s = await store.getSettings();
+    if (ctx.account?.login && store.relayConfigured(s)) void jobs.getRelay(s).renewLock(ctx.jobId, ctx.account.login).catch(() => null);
+    return { retry: true, attempt: n + 1 };
   },
   async RV_STARTED(_msg, sender) {
     const ctx = await store.getTabJob(sender.tab.id);
     if (ctx) await store.setTabJob(sender.tab.id, { ...ctx, started: true });
     return { ok: true };
   },
+  /** Juste avant « Sauvegarder le brouillon » : refusé si le robot a abandonné ce remplissage (délai dépassé). */
   async RV_SAVING(msg, sender) {
     const ctx = await store.getTabJob(sender.tab.id);
-    if (ctx) await store.setTabJob(sender.tab.id, { ...ctx, pendingResult: msg.result, savingAt: Date.now() });
+    if (!ctx) return { ok: false };
+    await store.setTabJob(sender.tab.id, { ...ctx, pendingResult: msg.result, savingAt: Date.now() });
     return { ok: true };
   },
   async RV_TAB_PHOTOS(msg, sender) {
@@ -139,8 +179,8 @@ const handlers = {
   async RV_ANALYZE(msg) {
     const s = await store.getSettings();
     const photos = (msg.photos || []).map((d) => ({ base64: String(d).split(',')[1], mime: 'image/jpeg' }));
-    const { fields, recognition } = await analyzePhotos({ photos, hints: msg.hints || {}, settings: s });
-    return { ok: true, fields, recognition };
+    const { fields, recognition, labelTexts } = await analyzePhotos({ photos, hints: msg.hints || {}, settings: s });
+    return { ok: true, fields, recognition, ...(msg.debug ? { labelTexts } : {}) };
   },
   async RV_RUN_MANUAL(msg) {
     const photos = (msg.photos || []).map((d, i) => ({ name: `${i + 1}.jpg`, base64: String(d).split(',')[1], mime: 'image/jpeg' }));

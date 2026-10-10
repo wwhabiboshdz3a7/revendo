@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
-import { ConflictError, GitHubRelay, RelayError, isTransient, mapLimit, utf8ToBase64 } from '../../extension/shared/relay.js';
+import { ConflictError, GitHubRelay, LOCK_PATH, RelayError, isTransient, liveWaiters, lockedByOther, mapLimit, retryDue, staleProcessing, utf8ToBase64 } from '../../extension/shared/relay.js';
 
 // ---------------------------------------------------------------------------
 // Faux GitHub (blobs, arbres plats, commits, une branche)
@@ -18,7 +18,7 @@ import { ConflictError, GitHubRelay, RelayError, isTransient, mapLimit, utf8ToBa
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function fakeGitHub({ files = {}, blobDelay = 0, blobFailures = [], patchConflicts = 0, readDelay = () => 0 } = {}) {
+function fakeGitHub({ files = {}, blobDelay = 0, blobFailures = [], patchConflicts = 0, readDelay = () => 0, failOnce = [] } = {}) {
   const blobs = new Map(); // sha → base64
   const trees = new Map(); // sha → Map(path → sha)
   const commits = new Map(); // sha → { tree, parents, message }
@@ -53,6 +53,13 @@ function fakeGitHub({ files = {}, blobDelay = 0, blobFailures = [], patchConflic
     const path = new URL(url).pathname.replace(/^\/repos\/o\/r/, '');
     const body = opts.body ? JSON.parse(opts.body) : null;
     calls.push({ method, path, body });
+    // Pannes ponctuelles : { method, re, status } consommée à la première requête qui correspond.
+    const fi = failOnce.findIndex((f) => f.method === method && f.re.test(path));
+    if (fi >= 0) {
+      const [f] = failOnce.splice(fi, 1);
+      if (f.status === 'network') throw new TypeError('Failed to fetch');
+      return json(f.status, { message: `erreur ${f.status}` });
+    }
     let m;
     if (method === 'GET' && path === '/git/ref/heads/main') return json(200, { object: { sha: ref } });
     if (method === 'GET' && (m = /^\/git\/commits\/(\w+)$/.exec(path))) return json(200, { sha: m[1], tree: { sha: commits.get(m[1]).tree } });
@@ -110,6 +117,9 @@ function fakeGitHub({ files = {}, blobDelay = 0, blobFailures = [], patchConflic
     head() {
       const map = trees.get(commits.get(ref).tree);
       return new Map([...map].map(([p, s]) => [p, blobs.get(s)]));
+    },
+    failNext(method, re, status) {
+      failOnce.push({ method, re, status });
     },
     count(method, re) {
       return calls.filter((c) => c.method === method && re.test(c.path)).length;
@@ -295,8 +305,10 @@ test('les écritures qui lisent l’arborescence fonctionnent toujours (claim, f
   const { id } = await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }, { base64: photo(2) }] });
   const [job] = await relay.pendingJobsFor('lauraaix');
   assert.equal(job.id, id);
-  assert.equal(await relay.claimJob(job, { login: 'lauraaix' }), true);
-  assert.equal(await relay.claimJob(job, { login: 'lauraaix' }), false);
+  assert.equal((await relay.claimJob(job, { login: 'lauraaix' })).ok, true);
+  const again = await relay.claimJob(job, { login: 'lauraaix' });
+  assert.equal(again.ok, false);
+  assert.equal(again.reason, 'déjà pris');
   await assert.rejects(relay.commit(() => { throw new ConflictError('stop'); }, 'x'), ConflictError);
   await relay.finishJob(job, { state: 'error', message: 'test' }, { deleteFiles: false });
   await relay.retryJob(id);
@@ -305,6 +317,294 @@ test('les écritures qui lisent l’arborescence fonctionnent toujours (claim, f
   const st = await relay.state();
   assert.equal(st.jobs.length, 0);
   assert.equal(st.statuses.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Verrou du robot (un seul profil remplit Vinted à la fois) et nouvel essai automatique
+// ---------------------------------------------------------------------------
+
+const readHeadJson = (gh, p) => {
+  const b64 = gh.head().get(p);
+  return b64 ? JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) : null;
+};
+
+test('lockedByOther / retryDue', () => {
+  const now = Date.parse('2026-10-10T10:00:00Z');
+  assert.equal(lockedByOther(null, 'a', now), false);
+  assert.equal(lockedByOther({ holder: 'a', until: '2026-10-10T10:05:00Z' }, 'a', now), false);
+  assert.equal(lockedByOther({ holder: 'b', until: '2026-10-10T10:05:00Z' }, 'a', now), true);
+  assert.equal(lockedByOther({ holder: 'b', until: '2026-10-10T09:59:59Z' }, 'a', now), false);
+  assert.equal(lockedByOther({ holder: 'b' }, 'a', now), false);
+  assert.equal(retryDue({ state: 'retry', retryAt: '2026-10-10T09:59:00Z' }, now), true);
+  assert.equal(retryDue({ state: 'retry', retryAt: '2026-10-10T10:01:00Z' }, now), false);
+  assert.equal(retryDue({ state: 'error' }, now), false);
+  assert.equal(retryDue(null, now), false);
+});
+
+test('verrou : pris avec le job en UN commit, refusé aux autres profils, libéré à la fin', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  await relay.createJob({ account: 'tms13', price: '9', photos: [{ base64: photo(2) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const [b] = await relay.pendingJobsFor('tms13');
+  const patches = gh.count('PATCH', /refs/);
+  const claimA = await relay.claimJob(a, { login: 'lauraaix', profile: 'Profil 1' });
+  assert.equal(claimA.ok, true);
+  assert.equal(gh.count('PATCH', /refs/), patches + 1, 'statut + verrou dans un seul commit');
+  assert.equal(claimA.lock.holder, 'lauraaix');
+  assert.equal(claimA.lock.jobId, a.id);
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'lauraaix');
+  assert.equal(readHeadJson(gh, `status/${a.id}.json`).state, 'processing');
+
+  const claimB = await relay.claimJob(b, { login: 'tms13' });
+  assert.equal(claimB.ok, false);
+  assert.equal(claimB.reason, 'verrou');
+  assert.equal(claimB.lock.holder, 'lauraaix');
+  assert.equal(gh.head().has(`status/${b.id}.json`), false, 'le job de tms13 reste en attente');
+  assert.equal((await relay.currentLock()).jobId, a.id);
+
+  assert.ok(readHeadJson(gh, LOCK_PATH).waiters.tms13, 'tms13 inscrit dans la file du verrou');
+  await relay.finishJob(a, { state: 'done', message: 'ok' });
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, '', 'verrou rendu…');
+  assert.equal(readHeadJson(gh, LOCK_PATH).reservedFor, 'tms13', '…et réservé à celui qui attendait');
+  assert.equal((await relay.claimJob(b, { login: 'tms13' })).ok, true);
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'tms13');
+  await relay.finishJob(b, { state: 'done', message: 'ok' });
+  assert.equal(gh.head().has(LOCK_PATH), false, 'personne n’attend : verrou supprimé');
+});
+
+test('verrou : expiré (profil planté) → repris par un autre profil ; sans exclusive, ignoré', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  await relay.createJob({ account: 'tms13', price: '9', photos: [{ base64: photo(2) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const [b] = await relay.pendingJobsFor('tms13');
+  const t0 = Date.parse('2026-10-10T10:00:00Z');
+  assert.equal((await relay.claimJob(a, { login: 'lauraaix' }, { now: () => t0, ttlMs: 60000 })).ok, true);
+  assert.equal((await relay.claimJob(b, { login: 'tms13' }, { now: () => t0 + 30000 })).reason, 'verrou');
+  const late = await relay.claimJob(b, { login: 'tms13' }, { now: () => t0 + 61000 });
+  assert.equal(late.ok, true);
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'tms13');
+  // Le profil planté qui termine malgré tout ne libère PAS le verrou d'un autre job.
+  await relay.finishJob(a, { state: 'error', message: 'x' }, { deleteFiles: false });
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'tms13');
+  // releaseLock ne touche qu'au verrou de son détenteur.
+  await relay.releaseLock('lauraaix');
+  assert.equal(gh.head().has(LOCK_PATH), true);
+  await relay.releaseLock('tms13');
+  assert.equal(gh.head().has(LOCK_PATH), false);
+});
+
+test('renewLock prolonge seulement son propre verrou', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const t0 = Date.parse('2026-10-10T10:00:00Z');
+  await relay.claimJob(a, { login: 'lauraaix' }, { now: () => t0, ttlMs: 60000 });
+  await relay.renewLock(a.id, 'lauraaix', { now: () => t0 + 50000, ttlMs: 60000 });
+  assert.equal(readHeadJson(gh, LOCK_PATH).until, new Date(t0 + 110000).toISOString());
+  await relay.renewLock(a.id, 'tms13', { now: () => t0 + 90000, ttlMs: 60000 });
+  await relay.renewLock('autre-job', 'lauraaix', { now: () => t0 + 90000, ttlMs: 60000 });
+  assert.equal(readHeadJson(gh, LOCK_PATH).until, new Date(t0 + 110000).toISOString());
+});
+
+test('nouvel essai automatique : statut retry → en attente à l’échéance, tentatives comptées, verrou libéré', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  assert.equal(a.attempts, 0);
+  await relay.claimJob(a, { login: 'lauraaix' });
+  const t = Date.now();
+  await relay.finishJob(a, { state: 'retry', attempts: 1, retryAt: new Date(t + 180000).toISOString(), message: 'Nouvel essai automatique dans 3 min' }, { deleteFiles: false });
+  assert.equal(gh.head().has(LOCK_PATH), false, 'le verrou est rendu pendant l’attente');
+  assert.match(gh.calls.filter((c) => c.method === 'POST' && c.path === '/git/commits').pop().body.message, /nouvel essai prévu/);
+  assert.equal((await relay.pendingJobsFor('lauraaix', { now: t })).length, 0, 'pas avant l’échéance');
+  assert.equal((await relay.claimJob(a, { login: 'lauraaix' }, { now: () => t })).reason, 'déjà pris');
+  const [again] = await relay.pendingJobsFor('lauraaix', { now: t + 181000 });
+  assert.equal(again.id, a.id);
+  assert.equal(again.attempts, 1);
+  const claim = await relay.claimJob(again, { login: 'lauraaix' }, { now: () => t + 181000 });
+  assert.equal(claim.ok, true);
+  assert.equal(claim.attempts, 1);
+  assert.equal(readHeadJson(gh, `status/${a.id}.json`).attempts, 1);
+  // Deux profils qui voient le même job dû : un seul le prend.
+  const other = await relay.claimJob(again, { login: 'lauraaix' }, { now: () => t + 181000 });
+  assert.equal(other.ok, false);
+});
+
+test('annonce supprimée en plein remplissage : verrou gardé par celui qui remplit, pas de statut fantôme', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  const { id } = await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  await relay.createJob({ account: 'tms13', price: '9', photos: [{ base64: photo(2) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const [b] = await relay.pendingJobsFor('tms13');
+  await relay.claimJob(a, { login: 'lauraaix' });
+  await relay.deleteJob(id);
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'lauraaix', 'lauraaix remplit encore : le verrou reste');
+  assert.equal((await relay.claimJob(b, { login: 'tms13' })).reason, 'verrou');
+  assert.equal((await relay.claimJob(a, { login: 'lauraaix' })).reason, 'supprimé');
+  await relay.finishJob(a, { state: 'retry', attempts: 1, retryAt: new Date().toISOString(), message: 'x' }, { deleteFiles: false });
+  assert.equal(gh.head().has(`status/${id}.json`), false, 'pas de « nouvel essai » fantôme');
+  assert.equal(readHeadJson(gh, LOCK_PATH).reservedFor, 'tms13');
+});
+
+test('verrou illisible (GitHub 502) : la prise échoue au lieu de conclure « libre »', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  await relay.createJob({ account: 'tms13', price: '9', photos: [{ base64: photo(2) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const [b] = await relay.pendingJobsFor('tms13');
+  await relay.claimJob(a, { login: 'lauraaix' });
+  await relay.renewLock(a.id, 'lauraaix'); // nouveau blob de verrou, absent du cache des autres
+  const other = makeRelay(gh); // autre profil : cache vide
+  const lockSha = sha1(`blob:${gh.head().get(LOCK_PATH)}`);
+  gh.failNext('GET', new RegExp(`/git/blobs/${lockSha}`), 502);
+  await assert.rejects(other.claimJob(b, { login: 'tms13' }));
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'lauraaix');
+  assert.equal(gh.head().has(`status/${b.id}.json`), false);
+});
+
+test('passage de relais équitable : un profil qui enchaîne ne reprend pas le verrou devant celui qui attend', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  for (const n of [1, 2, 3]) await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(n) }] });
+  await relay.createJob({ account: 'tms13', price: '9', photos: [{ base64: photo(9) }] });
+  const order = [];
+  const step = async (login) => {
+    const [j] = await relay.pendingJobsFor(login);
+    if (!j) return false;
+    const c = await relay.claimJob(j, { login });
+    if (!c.ok) return false;
+    order.push(login);
+    await relay.finishJob(j, { state: 'done', message: 'ok' });
+    return true;
+  };
+  await step('lauraaix');
+  await relay.claimJob((await relay.pendingJobsFor('tms13'))[0], { login: 'tms13' }); // refusé ? non : libre
+  order.push('tms13');
+  // tms13 tient le verrou ; lauraaix refusée → inscrite dans la file
+  const [l2] = await relay.pendingJobsFor('lauraaix');
+  assert.equal((await relay.claimJob(l2, { login: 'lauraaix' })).reason, 'verrou');
+  await relay.finishJob((await relay.state()).jobs.find((j) => j.account === 'tms13'), { state: 'done', message: 'ok' });
+  assert.equal(readHeadJson(gh, LOCK_PATH).reservedFor, 'lauraaix');
+  assert.equal(await step('lauraaix'), true);
+  assert.deepEqual(order, ['lauraaix', 'tms13', 'lauraaix']);
+
+  // Cas de la famine : A enchaîne, B attend → à la fin de A, le verrou va à B, pas à A.
+  const gh2 = fakeGitHub();
+  const r2 = makeRelay(gh2);
+  for (const n of [1, 2]) await r2.createJob({ account: 'a', price: '1', photos: [{ base64: photo(n) }] });
+  await r2.createJob({ account: 'b', price: '1', photos: [{ base64: photo(5) }] });
+  const [a1] = await r2.pendingJobsFor('a');
+  await r2.claimJob(a1, { login: 'a' });
+  const [b1] = await r2.pendingJobsFor('b');
+  assert.equal((await r2.claimJob(b1, { login: 'b' })).reason, 'verrou');
+  await r2.finishJob(a1, { state: 'done', message: 'ok' });
+  const [a2] = await r2.pendingJobsFor('a');
+  assert.equal((await r2.claimJob(a2, { login: 'a' })).reason, 'verrou', 'A doit laisser passer B');
+  assert.equal((await r2.claimJob(b1, { login: 'b' })).ok, true);
+  assert.ok(readHeadJson(gh2, LOCK_PATH).waiters.a, 'A attend à son tour');
+});
+
+test('file du verrou : profil en attente disparu (plus de 3 min) ignoré ; réservation expirée reprise par n’importe qui', async () => {
+  const t0 = Date.parse('2026-10-10T10:00:00Z');
+  const lock = { holder: 'a', jobId: 'x', until: new Date(t0 + 60000).toISOString(), waiters: { b: new Date(t0 - 200000).toISOString(), c: new Date(t0 - 10000).toISOString() } };
+  assert.deepEqual(liveWaiters(lock, t0).map(([l]) => l), ['c']);
+  // Forme { since, seen } : l'ancienneté compte pour l'ordre, le signe de vie pour la présence.
+  const lock2 = { holder: 'a', waiters: { b: { since: new Date(t0 - 400000).toISOString(), seen: new Date(t0 - 20000).toISOString() }, c: { since: new Date(t0 - 50000).toISOString(), seen: new Date(t0 - 5000).toISOString() } } };
+  assert.deepEqual(liveWaiters(lock2, t0).map(([l]) => l), ['b', 'c']);
+  const reserved = { holder: '', reservedFor: 'b', until: new Date(t0 + 75000).toISOString() };
+  assert.equal(lockedByOther(reserved, 'b', t0), false);
+  assert.equal(lockedByOther(reserved, 'a', t0), true);
+  assert.equal(lockedByOther(reserved, 'a', t0 + 76000), false);
+});
+
+test('profil qui attend plus de 3 min (remplissage long) : toujours prioritaire grâce à ses signes de vie', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'a', price: '1', photos: [{ base64: photo(1) }] });
+  await relay.createJob({ account: 'a', price: '1', photos: [{ base64: photo(2) }] });
+  await relay.createJob({ account: 'b', price: '1', photos: [{ base64: photo(3) }] });
+  const t0 = Date.parse('2026-10-10T10:00:00Z');
+  const [a1] = await relay.pendingJobsFor('a', { now: t0 });
+  await relay.claimJob(a1, { login: 'a' }, { now: () => t0 });
+  const [b1] = await relay.pendingJobsFor('b', { now: t0 });
+  // B relit toutes les 30 s pendant 5 min (remplissage de A très long).
+  for (let t = 6000; t <= 300000; t += 30000) assert.equal((await relay.claimJob(b1, { login: 'b' }, { now: () => t0 + t })).reason, 'verrou');
+  const w = readHeadJson(gh, LOCK_PATH).waiters.b;
+  assert.equal(w.since, new Date(t0 + 6000).toISOString(), 'attend depuis sa 1re demande');
+  assert.ok(Date.parse(w.seen) >= t0 + 240000, 'signe de vie récent');
+  await relay.finishJob(a1, { state: 'done', message: 'ok' }, { now: () => t0 + 310000 });
+  assert.equal(readHeadJson(gh, LOCK_PATH).reservedFor, 'b');
+  const [a2] = await relay.pendingJobsFor('a', { now: t0 + 314000 });
+  assert.equal((await relay.claimJob(a2, { login: 'a' }, { now: () => t0 + 314000 })).reason, 'verrou');
+  assert.equal((await relay.claimJob(b1, { login: 'b' }, { now: () => t0 + 330000 })).ok, true);
+});
+
+test('« en cours » abandonné (statut final jamais écrit) : repris par le même profil après la durée du verrou', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const t0 = Date.now();
+  await relay.claimJob(a, { login: 'lauraaix' }, { now: () => t0, ttlMs: 60000 });
+  assert.equal((await relay.pendingJobsFor('lauraaix', { now: t0 + 5 * 60000 })).length, 0, 'encore couvert');
+  const later = t0 + 16 * 60000;
+  const [again] = await relay.pendingJobsFor('lauraaix', { now: later });
+  assert.equal(again.id, a.id);
+  const c = await relay.claimJob(again, { login: 'lauraaix' }, { now: () => later });
+  assert.equal(c.ok, true);
+  assert.equal(c.attempts, 1, 'l’essai perdu compte');
+  assert.equal(staleProcessing({ id: 'x', state: 'processing', worker: { login: 'autre' }, updatedAt: new Date(t0).toISOString() }, null, 'lauraaix', later), false, 'jamais le job d’un autre profil');
+});
+
+test('finishJob : réessayé si le réseau coupe ; onlyIfProcessing n’écrase pas un « brouillon créé »', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  await relay.claimJob(a, { login: 'lauraaix' });
+  gh.failNext('POST', /^\/git\/trees$/, 'network');
+  gh.failNext('PATCH', /refs/, 502);
+  await relay.finishJob(a, { state: 'done', message: 'ok' });
+  assert.equal(readHeadJson(gh, `status/${a.id}.json`).state, 'done');
+  assert.equal(gh.head().has(LOCK_PATH), false);
+  await relay.finishJob(a, { state: 'retry', attempts: 1, retryAt: new Date().toISOString(), message: 'x' }, { deleteFiles: false, onlyIfProcessing: true });
+  assert.equal(readHeadJson(gh, `status/${a.id}.json`).state, 'done');
+});
+
+test('renewLock date aussi le statut « en cours » ; Réessayer refusé pendant un remplissage', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  const { id } = await relay.createJob({ account: 'lauraaix', price: '18', photos: [{ base64: photo(1) }] });
+  const [a] = await relay.pendingJobsFor('lauraaix');
+  const t0 = Date.now();
+  await relay.claimJob(a, { login: 'lauraaix' }, { now: () => t0 });
+  await relay.renewLock(a.id, 'lauraaix', { now: () => t0 + 600000 });
+  assert.equal(readHeadJson(gh, `status/${id}.json`).updatedAt, new Date(t0 + 600000).toISOString());
+  await assert.rejects(relay.retryJob(id), /remplit cette annonce/);
+  await relay.finishJob(a, { state: 'error', message: 'x' }, { deleteFiles: false });
+  await relay.retryJob(id);
+  assert.equal(gh.head().has(`status/${id}.json`), false);
+});
+
+test('acquireLock / releaseLock : remplissage manuel exclusif aussi', async () => {
+  const gh = fakeGitHub();
+  const relay = makeRelay(gh);
+  assert.equal((await relay.acquireLock({ login: 'a' }, 'manuel-1')).ok, true);
+  const refused = await relay.acquireLock({ login: 'b' }, 'manuel-2');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.lock.holder, 'a');
+  await relay.releaseLock('b');
+  assert.equal(readHeadJson(gh, LOCK_PATH).holder, 'a');
+  await relay.releaseLock('a');
+  assert.equal(gh.head().has(LOCK_PATH), false);
 });
 
 // ---------------------------------------------------------------------------

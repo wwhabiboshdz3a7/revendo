@@ -344,6 +344,7 @@ body.has-action-bar .toast { bottom: calc(var(--safe-bottom) + 132px); }
 .acc-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-seen { font-size: 12px; color: var(--text-2); white-space: nowrap; }
 .acc-seen.on { color: var(--ok-text); }
+.acc-seen.warn { color: var(--warn-text); white-space: normal; }
 .acc-empty { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: var(--r-md); color: var(--text-2); font-size: 13px; }
 
 .avatar {

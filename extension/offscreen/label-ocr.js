@@ -469,6 +469,40 @@ const ZONE_READS = [
 ];
 
 /**
+ * Zone juste sous une étiquette de marque, dans le sens de lecture : la
+ * petite étiquette de taille (« L/G », « S/P », « M » + « MADE IN … ») y est
+ * souvent cousue (Tommy Hilfiger, Ralph Lauren, Gap…), trop petite pour être
+ * repérée seule. rotate : rotation qui a permis de lire la marque (180 =
+ * étiquette à l'envers, « dessous » est alors au-dessus sur la photo).
+ * Renvoie la boîte (pixels de la photo) ou null.
+ */
+export function belowBox(region, rotate, width, height) {
+  if (region.dir !== 'h' || Math.abs(region.angle || 0) > 20) return null;
+  const w = region.x1 - region.x0;
+  const ch = Math.max(6, region.charH);
+  const up = Math.abs(rotate || 0) > 90;
+  const x0 = Math.max(0, Math.floor(region.x0 - 0.15 * w));
+  const x1 = Math.min(width, Math.ceil(region.x1 + 0.15 * w));
+  const [ya, yb] = up ? [region.y0 - 10 * ch, region.y0 - 0.3 * ch] : [region.y1 + 0.3 * ch, region.y1 + 10 * ch];
+  const box = { x0, y0: Math.max(0, Math.floor(ya)), x1, y1: Math.min(height, Math.ceil(yb)) };
+  return box.y1 - box.y0 >= 3 * ch && box.x1 - box.x0 >= 4 * ch ? box : null;
+}
+
+/** Texte d'une petite zone : mots moins sûrs gardés (« L/G » n'a que 2 lettres), lignes vides écartées. */
+export function smallZoneText(data) {
+  const out = [];
+  for (const block of data?.blocks || []) {
+    for (const para of block.paragraphs || []) {
+      for (const line of para.lines || []) {
+        const kept = (line.words || []).filter((w) => w.confidence >= 40 && alnum(w.text) >= 1);
+        if (kept.length) out.push(kept.map((w) => w.text).join(' '));
+      }
+    }
+  }
+  return out.join('\n');
+}
+
+/**
  * Lit une photo : lecture complète, puis lecture rapprochée des zones de
  * texte (graines + zones repérées, `maxRegions` au plus).
  *   img       : pixels RGBA { data, width, height } de la photo telle qu'on la lit ;
@@ -476,10 +510,11 @@ const ZONE_READS = [
  *               données Tesseract (box null = photo entière ; rotate en
  *               degrés, sens horaire ; psm = mode de découpage Tesseract) ;
  *   label     : photo marquée « étiquette » par le vendeur (plus de zones, relue à 180° si rien n'est lisible) ;
- *   deadline  : heure (ms) au-delà de laquelle on ne relit plus de zone.
+ *   deadline  : heure (ms) au-delà de laquelle on ne relit plus de zone ;
+ *   isBrand   : (texte) → vrai si c'est une marque : la zone sous cette étiquette est alors relue (taille).
  * Renvoie { text, score, lines, regions } (lines : lignes des zones rapprochées).
  */
-export async function readPhoto({ img, recognize, label = false, maxRegions = label ? 5 : 3, deadline = Infinity }) {
+export async function readPhoto({ img, recognize, label = false, maxRegions = label ? 5 : 3, deadline = Infinity, isBrand = null }) {
   const full = usefulText(await recognize({ box: null, scale: 1, invert: false, rotate: 0, sharpen: 0, psm: '11' }));
   const texts = [full.text];
   const lines = [];
@@ -504,6 +539,7 @@ export async function readPhoto({ img, recognize, label = false, maxRegions = la
     const plan = planCrop(region, img.width, img.height);
     const pixels = (plan.box.x1 - plan.box.x0) * (plan.box.y1 - plan.box.y0);
     let best = null;
+    let bestRotate = 0;
     let promising = false;
     attempts: for (const [k, how] of ZONE_READS.entries()) {
       // Après la 1re façon : seulement si quelque chose ressemble à un mot (sinon c'est de la texture).
@@ -514,7 +550,10 @@ export async function readPhoto({ img, recognize, label = false, maxRegions = la
         const data = await recognize({ box: plan.box, scale, invert: plan.invert, rotate, sharpen: how.boost ? 1.5 : 0, psm: how.psm });
         const read = usefulText(data, { scale });
         promising ||= read.words.some((w) => w.confidence >= 50 && /\p{L}{3}/u.test(w.text || ''));
-        if (!best || read.score > best.score) best = read;
+        if (!best || read.score > best.score) {
+          best = read;
+          bestRotate = rotate;
+        }
         if (best.score >= 10) break attempts; // bien lu : inutile d'insister
       }
     }
@@ -522,6 +561,20 @@ export async function readPhoto({ img, recognize, label = false, maxRegions = la
       texts.push(best.text);
       lines.push(...best.lines);
       score += best.score;
+    }
+    // Étiquette de marque lue : la petite étiquette de taille cousue dessous est relue de près.
+    if (best?.text && isBrand?.(best.text) && Date.now() <= deadline) {
+      const box = belowBox(region, bestRotate, img.width, img.height);
+      if (box) {
+        const zone = (box.x1 - box.x0) * (box.y1 - box.y0);
+        const zoom = Math.max(1, Math.min(40 / Math.max(8, region.charH), 4, Math.sqrt(2e6 / Math.max(1, zone))));
+        for (const psm of ['6', '11']) {
+          const text = smallZoneText(await recognize({ box, scale: zoom, invert: plan.invert, rotate: bestRotate, sharpen: 1, psm }));
+          if (!text) continue;
+          texts.push(text);
+          if (/\b(?:XXS|XS|S|M|L|XL|XXL|[1-3]X|\d{2})\b/.test(text)) break;
+        }
+      }
     }
   }
   return { text: texts.filter(Boolean).join('\n'), score, lines, regions: regions.length };

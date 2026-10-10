@@ -30,7 +30,10 @@ function call(fn, ...args) {
 }
 
 export async function attach(tabId) {
-  if (attached.has(tabId)) return;
+  if (attached.has(tabId)) {
+    await keepFocused(tabId);
+    return;
+  }
   try {
     await call(chrome.debugger.attach.bind(chrome.debugger), { tabId }, '1.3');
   } catch (err) {
@@ -47,6 +50,21 @@ export async function attach(tabId) {
     }
   }
   attached.add(tabId);
+  await keepFocused(tabId);
+}
+
+/**
+ * La page se croit toujours au premier plan (focus et fenêtre active) : une
+ * autre fenêtre ouverte par-dessus (autre profil, autre logiciel) ne referme
+ * plus ses menus et ne la met plus en veille. Réappliqué après chaque
+ * rechargement (le content script se rattache).
+ */
+async function keepFocused(tabId) {
+  try {
+    await send(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (_e) {
+    /* ancien Chrome : sans effet */
+  }
 }
 
 export async function detach(tabId) {

@@ -45,20 +45,46 @@
 
   main().catch((err) => console.error(TAG, err));
 
+  /** Libellés d'un bouton qui PUBLIE l'annonce : jamais cliqué. */
+  const PUBLISH_RX = /\bajouter\b|\bpublier\b|mettre en ligne|\bupload\b|t[ée]l[ée]verser/i;
+
+  /** La page va être rechargée par le service worker : ce remplissage s'arrête là, sans résultat. */
+  class PageRetry extends Error {}
+
+  /**
+   * Page Vinted en panne : demande un rechargement (nouvel essai depuis le
+   * début, 2 fois au plus). Renvoie false quand les essais sont épuisés —
+   * l'appelant continue alors avec ce qu'il a.
+   */
+  async function retryPage(reason) {
+    const res = await send('RV_RETRY_PAGE', { reason });
+    if (!res?.retry) return false;
+    banner.progress(`Nouvel essai (${res.attempt}) : ${reason}`);
+    throw new PageRetry(reason);
+  }
+
+  /** Échec définitif qu'un nouvel essai ne réglerait pas (compte déconnecté ou différent). */
+  class FatalError extends Error {}
+
   async function main() {
     let job = null;
     for (let i = 0; i < 8 && !job; i += 1) {
       job = (await send('RV_TAB_JOB'))?.job || null;
       if (!job) await sleep(600);
     }
-    if (!job) return; // onglet ouvert à la main : on ne touche à rien
+    if (!job) return; // onglet ouvert à la main (ou rechargé après la fin) : on ne touche à rien
     banner.start(job);
     let result;
     try {
       result = await fill(job);
     } catch (err) {
+      if (err instanceof PageRetry) {
+        // Rechargement demandé au service worker ; s'il n'a pas eu lieu d'ici 20 s, on le fait nous-mêmes.
+        setTimeout(() => window.location.reload(), 20000);
+        return; // le remplissage reprendra sur la page neuve
+      }
       console.error(TAG, err);
-      result = { ok: false, draftSaved: false, message: `Erreur inattendue : ${err?.message || err}`, fields: [] };
+      result = { ok: false, draftSaved: false, retryable: !(err instanceof FatalError), message: err instanceof FatalError ? err.message : `Erreur inattendue : ${err?.message || err}`, fields: [] };
     }
     if (cdpOk) await send('RV_CDP', { op: 'detach' });
     banner.done(result);
@@ -217,6 +243,10 @@
       const at = document.elementFromPoint(x, y);
       if (at && (at === el || el.contains(at) || at.contains(el))) break;
     }
+    // Vrai clic à des coordonnées : jamais si ce qui s'y trouve est un bouton de publication.
+    const hit = document.elementFromPoint(x, y);
+    const control = hit?.closest?.('button, a, [role="button"], input[type="submit"]');
+    if (control && !el.contains(control) && PUBLISH_RX.test(`${control.textContent || ''} ${control.value || ''} ${control.getAttribute('aria-label') || ''}`)) return false;
     const res = await send('RV_CDP', { op: 'click', x, y });
     return !!res?.ok;
   }
@@ -348,13 +378,34 @@
   // Étapes
   // =========================================================================
 
+  const formReady = () => document.querySelector('input[type="file"]') || SEL.title();
+
+  /** Captcha anti-robot de Vinted (DataDome) affiché à la place du formulaire. */
+  function captchaShown() {
+    const frame = [...document.querySelectorAll('iframe')].find((f) => /captcha-delivery|datadome/i.test(`${f.src} ${f.getAttribute('data-src') || ''} ${f.title}`));
+    if (frame) return true;
+    return !formReady() && /v[ée]rifi(?:e|ons) que (?:tu es|vous [êe]tes) (?:un )?humain|are you a human|press (?:&|and) hold/i.test(document.body?.innerText || '');
+  }
+
+  /**
+   * Formulaire prêt ? Jusqu'à 45 s (page lente, PC chargé). Captcha : on laisse
+   * 3 min pour le résoudre dans la fenêtre (le robot reprend tout seul), puis
+   * on recharge. Pas connecté : échec définitif (un nouvel essai ne servirait à rien).
+   */
   async function waitForForm() {
-    const ok = await waitFor(() => document.querySelector('input[type="file"]') || SEL.title(), 25000, 300);
-    if (!ok) {
-      if (/login|signup|session/.test(location.pathname) || document.querySelector('a[href*="login"]')) {
-        throw new Error("Ce profil n'est pas connecté à Vinted.");
+    let ok = await waitFor(() => formReady() || captchaShown(), 45000, 300);
+    if (ok && !formReady() && captchaShown()) {
+      banner.progress('Captcha Vinted : résous-le dans cette fenêtre, je reprends tout seul');
+      await send('RV_FOCUS');
+      ok = await waitFor(formReady, 180000, 1000);
+      if (!ok) await retryPage('captcha Vinted non résolu');
+    }
+    if (!formReady()) {
+      if (/login|signup|session/.test(location.pathname) || document.querySelector('a[href*="/login"], a[href*="member/signup"]')) {
+        throw new FatalError("Ce profil n'est pas connecté à Vinted.");
       }
-      throw new Error('Le formulaire Vinted ne s’est pas chargé.');
+      await retryPage('formulaire Vinted pas chargé');
+      throw new Error('Le formulaire Vinted ne s’est pas chargé (3 essais).');
     }
     await sleep(800);
   }
@@ -451,7 +502,7 @@
     const shown = photosShown();
     const failed = netDelta().failed;
     const notes = [photoTrack.how, failed ? `${failed} envoi${failed > 1 ? 's' : ''} refusé${failed > 1 ? 's' : ''} par Vinted` : ''].filter(Boolean);
-    return { ok: shown > 0, shown, detail: `${shown}/${photoTrack.total} visibles${notes.length ? ` — ${notes.join(', ')}` : ''}` };
+    return { ok: shown > 0, shown, failed, detail: `${shown}/${photoTrack.total} visibles${notes.length ? ` — ${notes.join(', ')}` : ''}` };
   }
 
   function photoInput() {
@@ -712,11 +763,6 @@
     return rows;
   }
 
-  /** Lignes recommandées par Vinted, attendues jusqu'à `ms` (elles arrivent parfois après l'ouverture du menu). */
-  async function waitRecos(panel, ms) {
-    return (await waitFor(() => (recoRows(panel).length ? recoRows(panel) : null), ms, 300)) || [];
-  }
-
   /** Recherche « Trouver une catégorie » : meilleure ligne pour `term` (note ≥ 70), ou null. */
   async function searchCategory(panel, term, ctx, committed, done) {
     const search = await waitFor(panel.search, 2500);
@@ -773,14 +819,27 @@
 
     let panel = await openPanel(trigger);
     if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
-    let recos = await waitRecos(panel, 6000);
-    if (!recos.length) {
-      // Vinted calcule encore ses recommandations : on referme et on rouvre une fois.
-      await closePanel();
-      await sleep(3000);
-      panel = await openPanel(trigger);
-      if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
-      recos = await waitRecos(panel, 6000);
+    // Vinted calcule ses recommandations depuis les photos : quelques secondes, parfois 20 s et
+    // plus quand le PC est chargé. On attend menu ouvert (il se met à jour seul), on le rouvre
+    // s'il s'est refermé (perte de focus) et on le referme/rouvre toutes les 12 s (rafraîchissement).
+    // Avec un terme à chercher (catégorie saisie, indice d'étiquette), on patiente moins.
+    const term = ctx.kw || hints.search || '';
+    const deadline = Date.now() + (term ? 15000 : 35000);
+    let reopenAt = Date.now() + 12000;
+    let recos = [];
+    for (;;) {
+      recos = recoRows(panel);
+      if (recos.length || Date.now() >= deadline) break;
+      const closed = !panel.options().length;
+      if (closed || Date.now() >= reopenAt) {
+        if (!closed) await closePanel();
+        await sleep(closed ? 300 : 1200);
+        panel = await openPanel(trigger);
+        if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
+        reopenAt = Date.now() + 12000;
+        continue;
+      }
+      await sleep(300);
     }
     const ranked = recos.map((el, i) => ({ el, s: catScore(el, ctx, i), hits: hintHits(normalize(lines(el).join(' ')), words) })).sort((a, b) => b.s - a.s);
 
@@ -792,7 +851,6 @@
     }
 
     // 2) Recherche : catégorie saisie, sinon terme déduit (taille W32 → « Jeans », Converse → « Baskets »).
-    const term = ctx.kw || hints.search || '';
     if (term) {
       const found = await searchCategory(panel, term, ctx, committed, done);
       if (found) return found;
@@ -911,7 +969,8 @@
     const tokens = [raw];
     const alpha = /^([A-Za-z]{1,4})\b/.exec(raw)?.[1];
     if (alpha && alpha !== raw) tokens.push(alpha);
-    const num = /\d{1,3}(?:[.,]5)?/.exec(raw)?.[0];
+    // Jeton numérique pour « 38 », « 42,5 », « 10 ans », « W32 » — jamais pour « 2XL » / « 3X » (→ « 2 » = XXXS).
+    const num = /^\d+\s*X/i.test(raw) ? null : /\d{1,3}(?:[.,]5)?/.exec(raw)?.[0];
     if (num) tokens.push(num, num.replace(',', '.'));
     return [...new Set(tokens.filter(Boolean))];
   }
@@ -1054,7 +1113,7 @@
   // ---------- Brouillon ----------
 
   async function saveDraft() {
-    const isPublish = (t) => /\bajouter\b|\bpublier\b|mettre en ligne|\bupload\b|t[ée]l[ée]verser/i.test(t);
+    const isPublish = (t) => PUBLISH_RX.test(t);
     const btn = [...document.querySelectorAll('button, [role="button"]')]
       .filter(isVisible)
       .find((b) => {
@@ -1089,50 +1148,76 @@
 
   async function fill(job) {
     const fields = [];
-    const step = async (label, enabled, fn) => {
+    /**
+     * Une étape du formulaire. retries : nouvelles tentatives si elle échoue
+     * (menu refermé par une perte de focus, liste redessinée, réponse lente) —
+     * le menu est refermé et la page laissée respirer entre deux.
+     */
+    const step = async (label, enabled, fn, { retries = 0 } = {}) => {
       if (!enabled) return null;
-      banner.progress(label);
       let res;
-      try {
-        res = await fn();
-      } catch (err) {
-        console.error(TAG, label, err);
-        res = { ok: false, detail: 'erreur inattendue' };
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        banner.progress(attempt ? `${label} (nouvel essai)` : label);
+        try {
+          res = await fn();
+        } catch (err) {
+          if (err instanceof PageRetry || err instanceof FatalError) throw err;
+          console.error(TAG, label, err);
+          res = { ok: false, detail: 'erreur inattendue' };
+        }
+        if (res?.ok || res?.skip || res?.final) break;
+        await closePanel();
+        await sleep(600);
       }
-      if (!res?.skip) fields.push({ label, ok: !!res?.ok, detail: res?.detail || '' });
+      if (!res?.skip) setField(label, !!res?.ok, res?.detail || '');
       await sleep(200);
       return res;
     };
+    const setField = (label, ok, detail) => {
+      const entry = fields.find((f) => f.label === label);
+      if (entry) Object.assign(entry, { ok, detail });
+      else fields.push({ label, ok, detail });
+    };
 
-    // Verrou : si la page est rechargée, le job n'est pas rejoué (pas de doublon).
-    await send('RV_STARTED');
     cdpOk = !!(await send('RV_CDP', { op: 'attach' }))?.ok;
     if (cdpOk) await sleep(700); // le bandeau du débogueur décale la page une fois
     await send('RV_FOCUS');
     await waitForForm();
+    // Verrou posé seulement maintenant : si la page est rechargée après (sans demande), le job n'est
+    // pas rejoué (pas de doublon). Avant, rien n'est encore saisi : un rechargement pendant l'attente
+    // du formulaire (captcha résolu, vérification anti-robot de Vinted) doit reprendre le remplissage.
+    await send('RV_STARTED');
     await dismissOverlays();
     // Compteur des envois de photos (si l'injection échoue : vignettes seules).
     if (job.photoCount > 0) await send('RV_NET_MONITOR');
 
-    await step('Photos', job.photoCount > 0, () => fillPhotos(job.photoCount));
+    const photos = await step('Photos', job.photoCount > 0, () => fillPhotos(job.photoCount));
+    // Photos refusées ou perdues : sans elles, Vinted ne propose aucune catégorie. Page neuve, nouvel essai.
+    // (photos manquantes sans refus visible : peut-être un simple décompte raté, on continue)
+    if (photos && (photos.shown === 0 || (photos.failed > 0 && photos.shown < Math.min(job.photoCount, 20)))) {
+      await retryPage(`photos ${photos.shown}/${job.photoCount} reçues par Vinted`);
+    }
     await step('Titre', !!job.title, () => fillText(SEL.title, job.title));
     await step('Description', !!job.description, () => fillText(SEL.desc, job.description));
     await step('Prix', !!job.price, () => fillPrice(job.price));
 
     // Les recommandations de catégorie viennent des photos : envois terminés d'abord.
     await settleUploads(30000);
-    const cat = await step('Catégorie', true, () => selectCategory(job));
+    await dismissOverlays();
+    const cat = await step('Catégorie', true, () => selectCategory(job), { retries: 1 });
+    if (!cat?.ok && /menu ne s'est pas ouvert|aucune catégorie \(photos/.test(cat?.detail || '')) await retryPage(`catégorie : ${cat.detail}`);
     if (cat?.ok) {
       await waitFor(() => SEL.status() || SEL.brand() || SEL.size(), 8000, 300);
       await sleep(500);
     }
 
     // Sans catégorie, Vinted n'affiche pas les lignes suivantes : on les note « à faire ».
-    const afterCat = (fn) => (cat?.ok ? fn() : Promise.resolve({ ok: false, detail: 'à choisir après la catégorie' }));
+    const afterCat = (fn) => (cat?.ok ? fn() : Promise.resolve({ ok: false, final: true, detail: 'à choisir après la catégorie' }));
     const candidates = Array.isArray(job.brandCandidates) ? job.brandCandidates : [];
-    const brand = await step('Marque', !!job.brand || candidates.length > 0, () => afterCat(() => selectBrand(job.brand, candidates)));
+    const brand = await step('Marque', !!job.brand || candidates.length > 0, () => afterCat(() => selectBrand(job.brand, candidates)), { retries: 1 });
     await dismissAuthenticityModal();
     const verifiedBrand = brand?.verified && brand.name ? brand.name : '';
+    if (verifiedBrand) job.brand = verifiedBrand;
 
     if ((job.composeAfterCategory && cat?.ok) || verifiedBrand) {
       // Titre et description composés d'après la catégorie choisie sur Vinted (et la marque trouvée sur Vinted).
@@ -1140,37 +1225,27 @@
       const composed = await send('RV_COMPOSE', { categoryName: recompose ? cat.name : '', categoryPath: recompose ? cat.path || '' : '', brand: verifiedBrand });
       if (composed?.ok && composed.title) {
         job.title = composed.title;
+        job.description = composed.description;
         await step('Titre', true, () => fillText(SEL.title, composed.title));
         await step('Description', true, () => fillText(SEL.desc, composed.description));
       }
     }
-    await step('Taille', !!job.size, () => afterCat(() => selectSize(job.size)));
-    await step('État', !!job.condition, () => afterCat(() => selectCondition(job.condition)));
-    await step('Couleur', !!job.colors?.length, () => afterCat(() => selectMulti(SEL.color, job.colors.slice(0, 2), 'couleur')));
-    await step('Matériau', !!job.materials?.length, () => afterCat(() => selectMulti(SEL.material, job.materials.slice(0, 3), 'matériau')));
+    await step('Taille', !!job.size, () => afterCat(() => selectSize(job.size)), { retries: 1 });
+    await step('État', !!job.condition, () => afterCat(() => selectCondition(job.condition)), { retries: 1 });
+    await step('Couleur', !!job.colors?.length, () => afterCat(() => selectMulti(SEL.color, job.colors.slice(0, 2), 'couleur')), { retries: 1 });
+    await step('Matériau', !!job.materials?.length, () => afterCat(() => selectMulti(SEL.material, job.materials.slice(0, 3), 'matériau')), { retries: 1 });
     await step('Colis', !!job.package, () => selectPackage(job.package));
     await dismissAuthenticityModal();
 
-    // Le choix de catégorie re-monte le champ prix : on revérifie juste avant d'enregistrer.
-    const priceEntry = fields.find((f) => f.label === 'Prix');
-    if (job.price) {
-      const again = await fillPrice(job.price);
-      if (priceEntry) Object.assign(priceEntry, { ok: again.ok, detail: again.detail || priceEntry.detail });
-    }
-    // Une couleur peut se décocher si un panneau est resté ouvert : on revérifie.
-    if (job.colors?.length && SEL.color() && !normalize(SEL.color().value).includes(normalize(job.colors[0]))) {
-      const again = await selectMulti(SEL.color, job.colors.slice(0, 2), 'couleur');
-      const entry = fields.find((f) => f.label === 'Couleur');
-      if (entry) Object.assign(entry, { ok: again.ok, detail: again.detail });
-    }
+    await verifyBeforeSave(job, { cat, setField, step, afterCat });
+
     // Photos encore en cours d'envoi : on attend, puis on recompte (ligne « Photos » à jour).
     let shown = 0;
     if (photoTrack.total) {
       await settleUploads(90000);
       const again = photoResult();
       shown = again.shown;
-      const entry = fields.find((f) => f.label === 'Photos');
-      if (entry) Object.assign(entry, { ok: again.ok, detail: again.detail });
+      setField('Photos', again.ok, again.detail);
     }
 
     const base = {
@@ -1185,23 +1260,59 @@
     // Sécurité : le profil est-il toujours connecté au bon compte ?
     if (job.account?.id) {
       const me = await send('RV_WHOAMI');
-      if (me?.loggedOut) return { ...base, ok: false, draftSaved: false, message: 'Le profil a été déconnecté de Vinted : rien n’a été enregistré.' };
+      if (me?.loggedOut) return { ...base, ok: false, retryable: false, draftSaved: false, message: 'Le profil a été déconnecté de Vinted : rien n’a été enregistré.' };
       if (me?.id && me.id !== job.account.id) {
-        return { ...base, ok: false, draftSaved: false, message: `Compte Vinted différent (@${me.login}) : rien n’a été enregistré pour ne pas se tromper de compte.` };
+        return { ...base, ok: false, retryable: false, draftSaved: false, message: `Compte Vinted différent (@${me.login}) : rien n’a été enregistré pour ne pas se tromper de compte.` };
       }
     }
     banner.progress('Enregistrement du brouillon');
+    await dismissOverlays();
     // Si Vinted recharge la page après l'enregistrement, ce script disparaît :
     // le service worker garde ce résultat et le valide en voyant la redirection.
-    await send('RV_SAVING', { result: { ...base, ok: true, draftSaved: true, draftConfirmed: false, message: 'Brouillon enregistré.' } });
+    const go = await send('RV_SAVING', { result: { ...base, ok: true, draftSaved: true, draftConfirmed: false, message: 'Brouillon enregistré.' } });
+    // Le robot a abandonné ce remplissage entre-temps (délai dépassé, extension rechargée) : on
+    // n'enregistre rien, un autre remplissage a peut-être déjà démarré.
+    if (!go?.ok) return { ...base, ok: false, retryable: false, draftSaved: false, message: 'Remplissage abandonné par le robot : rien n’a été enregistré.' };
     const saved = await saveDraft();
     return {
       ...base,
       ok: saved.saved,
+      retryable: saved.saved || !/refuse d'enregistrer/.test(saved.message || ''),
       draftSaved: saved.saved,
       draftConfirmed: saved.confirmed,
       message: saved.message || (saved.confirmed ? 'Brouillon enregistré.' : 'Brouillon enregistré (confirmation non visible).'),
     };
+  }
+
+  /**
+   * Dernier contrôle avant d'enregistrer : chaque valeur déjà remplie est
+   * relue sur la page (le chargement de Vinted peut effacer un champ tapé trop
+   * tôt, un choix de catégorie re-monte le prix, une couleur se décoche) et
+   * remise si elle a disparu.
+   */
+  async function verifyBeforeSave(job, { cat, setField, step, afterCat }) {
+    banner.progress('Vérification avant enregistrement');
+    await closePanel();
+    if (job.title && SEL.title() && normalize(SEL.title().value) !== normalize(job.title)) await step('Titre', true, () => fillText(SEL.title, job.title));
+    if (job.description && SEL.desc() && normalize(SEL.desc().value) !== normalize(job.description)) await step('Description', true, () => fillText(SEL.desc, job.description));
+    if (job.price) {
+      // Ressaisi seulement s'il a changé : fillPrice commence par vider le champ.
+      const expected = parseFloat(String(job.price).replace(/\s|€/g, '').replace(',', '.'));
+      const shown = parseShownPrice(SEL.price()?.value);
+      if (!(Math.abs(shown - expected) < 0.001)) {
+        const again = await fillPrice(job.price);
+        setField('Prix', again.ok, again.detail || '');
+      }
+    }
+    if (!cat?.ok) return;
+    const empty = (sel) => sel() && !(sel().value || '').trim();
+    if (job.brand && empty(SEL.brand)) await step('Marque', true, () => afterCat(() => selectBrand(job.brand, [])), { retries: 1 });
+    if (job.size && empty(SEL.size)) await step('Taille', true, () => afterCat(() => selectSize(job.size)), { retries: 1 });
+    if (job.condition && empty(SEL.status)) await step('État', true, () => afterCat(() => selectCondition(job.condition)), { retries: 1 });
+    const colors = (job.colors || []).slice(0, 2);
+    if (colors.length && SEL.color() && !colors.every((c) => normalize(SEL.color().value).includes(normalize(c)))) {
+      await step('Couleur', true, () => afterCat(() => selectMulti(SEL.color, colors, 'couleur')), { retries: 1 });
+    }
   }
 
   /** Garde la dernière entrée de chaque libellé (le titre peut être rempli deux fois). */

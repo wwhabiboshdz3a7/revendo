@@ -148,6 +148,45 @@ const LETTER_TOKEN = /^(?:XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|[2-6]XL)$/; // majuscule
 const SIZE_WORDS = '(?:taille|size|sz|talla|taglia|tamanho|maat|rozmiar|gr(?:ö|o|oe)(?:ß|ss)e|tg|pointure)';
 const WORD_SIZES = { xsmall: 'XS', extrasmall: 'XS', small: 'S', medium: 'M', large: 'L', xlarge: 'XL', extralarge: 'XL', xxlarge: 'XXL' };
 const QUALIFIERS = /^(?:eu|eur|fr|it|es|de|uk|us|mx|cn|int|taille|size|t)$/i;
+/**
+ * Lettres de taille françaises (Canada) et espagnoles des étiquettes
+ * bilingues : « S/P », « L/G », « XL TG/XG », « M/M », « L/GD ». Seules, elles
+ * sont trop ambiguës (un « G » isolé est souvent du bruit d'OCR) : elles ne
+ * comptent qu'à côté d'une taille internationale ou par deux (« TG/XG »).
+ */
+const FR_SIZES = { TTP: 'XXS', TP: 'XS', P: 'S', CH: 'S', M: 'M', MD: 'M', G: 'L', GD: 'L', TG: 'XL', XG: 'XL', EG: 'XL', TTG: 'XXL', XTG: 'XXL', XXG: 'XXL' };
+const FR_TOKEN = new RegExp(`^(?:${Object.keys(FR_SIZES).join('|')})$`);
+const INTL_ORDER = ['XXXS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
+const BILINGUAL = new RegExp(`(?:^|[^A-Za-z0-9])(${LETTER_SIZE})\\s*\\/\\s*([A-Z]{1,3})(?![A-Za-z0-9])`, 'g');
+
+/** « 2XL » → « XXL », « 3XL » → « XXXL » (forme de la liste Vinted) ; 4XL et plus restent tels quels. */
+function canonicalLetter(intl) {
+  return String(intl).toUpperCase().replace(/^([2-3])XL$/, (_m, n) => `${'X'.repeat(Number(n))}L`);
+}
+
+/** Les deux moitiés d'une taille bilingue désignent-elles la même taille (« L/G » oui, « M/G » non) ? */
+function sameSize(intl, fr) {
+  const a = INTL_ORDER.indexOf(canonicalLetter(intl));
+  return a >= 0 && a === INTL_ORDER.indexOf(FR_SIZES[fr]);
+}
+
+const OCR_SLASH = new RegExp(`(^|[^A-Za-z0-9])(${LETTER_SIZE})\\s*[#|!\\\\]\\s*([A-Z]{1,3})(?![A-Za-z0-9])`, 'gm');
+
+/** Barre d'une taille bilingue lue « # », « | », « ! » ou « \\ » par l'OCR (« S#P ») : remise en « / » si la paire concorde. */
+function fixOcrSlashes(text) {
+  return text.replace(OCR_SLASH, (m, pre, a, b) => (FR_TOKEN.test(b) && sameSize(a, b) ? `${pre}${a}/${b}` : m));
+}
+
+/**
+ * Paires bilingues « L/G », « XL/TG » d'un texte : la taille si TOUTES les
+ * paires concordantes trouvées disent la même chose (une grille de tailles
+ * « XS/TP S/P M/M L/G » n'en désigne aucune), sinon null.
+ */
+function bilingualSize(flat) {
+  const found = new Set();
+  for (const mm of flat.matchAll(BILINGUAL)) if (FR_TOKEN.test(mm[2]) && sameSize(mm[1], mm[2])) found.add(canonicalLetter(mm[1]));
+  return found.size === 1 ? [...found][0] : null;
+}
 
 /**
  * Variante PRUDENTE de detectSize pour un texte d'étiquette (OCR ou
@@ -162,7 +201,7 @@ const QUALIFIERS = /^(?:eu|eur|fr|it|es|de|uk|us|mx|cn|int|taille|size|t)$/i;
  */
 export function detectSizeStrict(text, { anchored = false } = {}) {
   if (!text) return null;
-  const raw = String(text);
+  const raw = fixOcrSlashes(String(text));
   const flat = ` ${raw.replace(/\s+/g, ' ')} `;
   // 1) Jean W/L, taille unique.
   let m = flat.match(/\bW\s?(\d{2})\s*[\/x]?\s*L\s?(\d{2})\b/i);
@@ -181,6 +220,10 @@ export function detectSizeStrict(text, { anchored = false } = {}) {
   if (m && +m[1] >= 1 && +m[1] <= 16) return `${+m[1]} ans`;
   m = flat.match(/\b(\d{1,2})\s*(?:mois|months?|monate|meses|mesi)\b/i);
   if (m && +m[1] >= 1 && +m[1] <= 36) return `${+m[1]} mois`;
+  // 3 bis) Étiquette bilingue « L/G », « S/P », « XL/TG » (majuscules, les deux moitiés concordent) —
+  // après « taille : » et l'âge (une étiquette enfant « 10 ANS M/M » est un 10 ans, pas un M).
+  const bi = bilingualSize(flat);
+  if (bi) return bi;
   // 4) Ligne courte qui ne contient QUE des tailles (« M », « M / 40 », « XL - 44 », « EU 42 », « 10A »).
   const lines = raw
     .split(/[\n\r|]+/)
@@ -214,10 +257,21 @@ function shortLineSize(line) {
     .map((x) => x.replace(/^[.'"·]+|[.'"·]+$/g, ''))
     .filter(Boolean);
   if (!toks.length || toks.length > 6) return null;
-  const ok = toks.every((x) => LETTER_TOKEN.test(x) || /^\d{2}(?:[.,]5)?$/.test(x) || /^\d{1,2}[AY]$/.test(x) || QUALIFIERS.test(x) || WORD_SIZES[slug(x)]);
+  // Grandes tailles américaines « 1X / 2X / 3X » (= XL, XXL, XXXL), seules sur leur ligne.
+  if (toks.length === 1 && /^[1-3]X$/.test(toks[0])) return ['XL', 'XXL', 'XXXL'][Number(toks[0][0]) - 1];
+  const ok = toks.every(
+    (x) => LETTER_TOKEN.test(x) || FR_TOKEN.test(x) || /^\d{2}(?:[.,]5)?$/.test(x) || /^\d{1,2}[AY]$/.test(x) || QUALIFIERS.test(x) || WORD_SIZES[slug(x)],
+  );
   if (!ok) return null;
   const letter = toks.find((x) => LETTER_TOKEN.test(x));
-  if (letter) return letter;
+  const frToks = toks.filter((x) => FR_TOKEN.test(x) && !LETTER_TOKEN.test(x));
+  if (letter) return frToks.every((x) => sameSize(letter, x)) ? canonicalLetter(letter) : null; // « L/G » oui, « M/G » non
+  // « TG/XG » seul (la ligne « XL » au-dessus est illisible) : deux lettres françaises DIFFÉRENTES, de
+  // deux lettres au moins, qui concordent (« P P », « G G », « P/CH » : pays, symboles d'entretien).
+  const fr = frToks.map((x) => FR_SIZES[x]);
+  const multi = [...new Set(frToks)].filter((x) => x.length >= 2 && x !== 'CH');
+  if (multi.length >= 2 && fr.every((v) => v === fr[0])) return fr[0];
+  if (fr.length) return null; // « G » ou « P » seul : trop ambigu
   const word = toks.find((x) => WORD_SIZES[slug(x)]);
   if (word) return WORD_SIZES[slug(word)];
   const age = toks.find((x) => /^\d{1,2}[AY]$/.test(x));
@@ -249,7 +303,16 @@ export function normalizeSize(value) {
   m = /^(?:eu|eur|fr)\s*(\d{2}(?:[.,]5)?)$/i.exec(s);
   if (m) return m[1].replace('.', ',');
   if (/^\d{2}[.,]5$/.test(s)) return s.replace('.', ',');
-  if (/^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|[2-6]xl)$/i.test(s)) return s.toUpperCase();
+  if (/^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|[2-6]xl)$/i.test(s)) return canonicalLetter(s);
+  m = /^([1-3])x$/i.exec(s); // grandes tailles américaines « 1X / 2X / 3X »
+  if (m) return ['XL', 'XXL', 'XXXL'][Number(m[1]) - 1];
+  // « L/G », « S/P », « XL/TG » : la lettre internationale, seulement si les deux moitiés concordent
+  // (« M/L », « S/M » sont de vraies tailles doubles : gardées telles quelles).
+  m = /^(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|[2-6]xl)\s*\/\s*([a-z]{1,3})$/i.exec(s);
+  if (m && FR_TOKEN.test(m[2].toUpperCase()) && sameSize(m[1].toUpperCase(), m[2].toUpperCase())) return canonicalLetter(m[1]);
+  // Lettres françaises seules saisies au téléphone : « TG », « TG/XG » (pas « G » ou « P » seuls).
+  const frs = s.toUpperCase().split(/\s*\/\s*/);
+  if (frs.every((x) => FR_TOKEN.test(x) && x.length >= 2) && frs.every((x) => FR_SIZES[x] === FR_SIZES[frs[0]])) return FR_SIZES[frs[0]];
   if (WORD_SIZES[slug(s)]) return WORD_SIZES[slug(s)];
   return s.slice(0, 16);
 }
@@ -425,7 +488,32 @@ export function detectBrandFuzzy(text, brands = BRANDS) {
       }
     }
   }
-  return best ? best.name : null;
+  return best ? best.name : brandFromHalves(tokens, brands);
+}
+
+/**
+ * Marque en deux mots lue à moitié par l'OCR (bord d'étiquette coupé,
+ * caractère illisible) : « 'OMMY = HIL » → Tommy Hilfiger. Deux mots qui se
+ * suivent : le 1er est la fin du 1er mot de la marque (4 lettres au moins) ou
+ * ce mot à une lettre près, le 2e est le début du 2e mot (3 lettres au moins) ;
+ * 7 lettres retrouvées au total. Deux mots ensemble sont trop précis pour
+ * tomber là par hasard.
+ */
+function brandFromHalves(tokens, brands) {
+  const words = tokens.map((t) => ocrFold(t));
+  for (const b of brands) {
+    const parts = normalize(b).split(/[^a-z0-9]+/).filter(Boolean);
+    if (parts.length !== 2 || parts.some((w) => w.length < 4) || AMBIGUOUS_BRANDS.has(slug(b))) continue;
+    const [w1, w2] = parts.map((w) => ocrFold(w));
+    for (let i = 0; i + 1 < words.length; i += 1) {
+      const a = words[i];
+      const c = words[i + 1];
+      const firstOk = (a.length >= 4 && w1.endsWith(a)) || (a.length === w1.length && fuzzyCost(a, w1) >= 0);
+      const secondOk = (c.length >= 3 && w2.startsWith(c)) || (c.length === w2.length && fuzzyCost(c, w2) >= 0);
+      if (firstOk && secondOk && a.length + c.length >= 7) return b;
+    }
+  }
+  return null;
 }
 
 let brandIndex = null;

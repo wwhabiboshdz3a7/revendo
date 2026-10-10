@@ -151,7 +151,7 @@ export function readLabels(text) {
 async function readAllLabels(photos, labelIndexes, { read = ocrPhoto, now = Date.now, prepare = atMost } = {}) {
   const order = [...labelIndexes, ...photos.map((_, i) => i).filter((i) => !labelIndexes.includes(i))].slice(0, MAX_OCR_PHOTOS);
   const deadline = now() + ZONE_BUDGET_MS;
-  const out = { text: '', lines: [], scores: new Map(), read: 0, error: '' };
+  const out = { text: '', lines: [], scores: new Map(), read: 0, error: '', perPhoto: [] };
   const texts = [];
   for (const i of order) {
     const isLabel = labelIndexes.includes(i);
@@ -170,6 +170,7 @@ async function readAllLabels(photos, labelIndexes, { read = ocrPhoto, now = Date
     try {
       const res = await read(image, { label: isLabel, deadline });
       texts.push(res.text);
+      out.perPhoto.push({ photo: i, score: res.score, text: res.text.slice(0, 1500) });
       out.lines.push(...res.lines);
       out.scores.set(i, res.score);
       out.read += 1;
@@ -242,7 +243,7 @@ export async function analyzePhotos({ photos, hints = {}, settings = {} }, deps 
     condition: hints.condition ? 'saisie' : local.condition ? 'étiquette' : '',
     colors: hints.colors?.length ? 'saisie' : local.colors.length ? 'photos' : '',
   };
-  return { fields, recognition, local };
+  return { fields, recognition, local, labelTexts: labels.perPhoto || [] };
 }
 
 /** Annonce complète (titre + description) pour le content script. */

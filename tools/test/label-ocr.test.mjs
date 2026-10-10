@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { findTextRegions, mergeRegions, planCrop, prepareForOcr, readPhoto, seedRegions, usefulText } from '../../extension/offscreen/label-ocr.js';
+import { belowBox, findTextRegions, mergeRegions, planCrop, prepareForOcr, readPhoto, seedRegions, smallZoneText, usefulText } from '../../extension/offscreen/label-ocr.js';
 
 // ---------------------------------------------------------------------------
 // Images synthétiques
@@ -237,4 +237,39 @@ test('readPhoto : photo marquée « étiquette » sans rien de lisible → relue
     [null, 180],
   ]);
   assert.equal(r.text, 'LEVIS');
+});
+
+test('étiquette de marque lue → la petite étiquette de taille cousue dessous est relue', async () => {
+  const img = canvas(400, 300, 7);
+  label(img, { x: 80, y: 60 });
+  const calls = [];
+  const r = await readPhoto({
+    img,
+    isBrand: (t) => /TOMMY/.test(t),
+    recognize: async (op) => {
+      calls.push(op);
+      if (!op.box) return tess([]);
+      if (op.box.y0 > 100) return tess([[['L/G', 45]], [['MADE', 60], ['IN', 60]]]); // zone du dessous : mots peu sûrs gardés
+      return op.rotate === 0 ? tess([[['TOMMY', 95, 56]], [['HILFIGER', 90, 56]]]) : tess([]);
+    },
+  });
+  const below = calls.filter((c) => c.box && c.box.y0 > 100);
+  assert.ok(below.length >= 1, 'zone du dessous relue');
+  assert.equal(below[0].rotate, 0);
+  assert.ok(below[0].box.y0 >= 100 && below[0].box.x0 <= 90);
+  assert.match(r.text, /L\/G\nMADE IN/);
+  // Sans marque reconnue : pas de lecture du dessous.
+  const calls2 = [];
+  await readPhoto({ img, isBrand: () => false, recognize: async (op) => (calls2.push(op), op.box ? tess([[['TOMMY', 95, 56]]]) : tess([])) });
+  assert.equal(calls2.filter((c) => c.box && c.box.y0 > 100).length, 0);
+});
+
+test('belowBox : sous l’étiquette dans le sens de lecture (au-dessus si lue retournée) ; smallZoneText garde « L/G »', () => {
+  const region = { x0: 100, y0: 100, x1: 200, y1: 114, charH: 12, dir: 'h', angle: 0 };
+  const down = belowBox(region, 0, 400, 400);
+  assert.ok(down.y0 > 114 && down.y1 > 200 && down.x0 < 100 && down.x1 > 200);
+  const up = belowBox(region, 180, 400, 400);
+  assert.ok(up.y1 < 100);
+  assert.equal(belowBox({ ...region, dir: 'v' }, 0, 400, 400), null);
+  assert.equal(smallZoneText(tess([[['L/G', 45]], [['~', 20]]])), 'L/G');
 });

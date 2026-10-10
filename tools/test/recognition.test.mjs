@@ -128,6 +128,16 @@ test('detectBrandFuzzy : erreurs d’OCR reconnues', () => {
   for (const [text, want] of ok) assert.equal(detectBrandFuzzy(text), want, text);
 });
 
+test('vrais textes d’OCR à moitié lus : marque en deux moitiés, barre de taille lue « # »', () => {
+  // Annonce 291l : bord de l'étiquette coupé.
+  assert.equal(detectBrandFuzzy('ve\nhd\n1e Ser\n=\nNes\nACK\nSEAN\n\'OMMY = HIL'), 'Tommy Hilfiger');
+  assert.equal(detectBrandFuzzy('ALVIN KLE'), 'Calvin Klein');
+  for (const t of ['OMMY', 'hommy hilton', 'SMMy o', '100% COTON LAVAGE 30']) assert.equal(detectBrandFuzzy(t), null, t);
+  // Annonce i9vk : « S/P » lu « S#P » au-dessus de « CHINA ».
+  assert.equal(detectSizeStrict('y\nA\nDe\nWh\n7\n-\nS#P\nCHINA', { anchored: true }), 'S');
+  assert.equal(detectSizeStrict('TOMMY\nM#G', { anchored: true }), null);
+});
+
 test('detectBrandFuzzy : pas de faux positif sur des étiquettes d’entretien et des mots courants', () => {
   const corpus = [
     'MADE IN CHINA RN 77806 CA 00474 100% COTTON MACHINE WASH COLD WITH LIKE COLORS TUMBLE DRY LOW DO NOT BLEACH',
@@ -175,6 +185,40 @@ test('detectSizeStrict : lettre seule seulement après « taille/size… » ou s
   // detectSize garde son comportement historique (texte saisi par le vendeur).
   assert.equal(detectSize('Pull taille M'), 'M');
   assert.equal(detectSize('Jean W30 L32'), 'W30');
+});
+
+test('detectSizeStrict : étiquettes bilingues (L/G, S/P, XL TG/XG, 2X) ; paires incohérentes refusées', () => {
+  const ok = [
+    ['TOMMY HILFIGER\nL/G\nMADE IN CHINA', 'L'],
+    ['S/P\n100% COTON', 'S'],
+    ['TOMMY HILFIGER\nXL TG/XG', 'XL'],
+    ['TOMMY HILFIGER\nXL\nTG', 'XL'],
+    ['RN 77806 CA 34056\nL / G', 'L'],
+    ['TOMMY HILFIGER\n2X', 'XXL'],
+    ['TOMMY HILFIGER\nTG/XG', 'XL'],
+  ];
+  for (const [text, want] of ok) assert.equal(detectSizeStrict(text, { anchored: true }), want, text);
+  const ko = ['TOMMY HILFIGER\nM/G', 'TOMMY HILFIGER\nG', 'TOMMY HILFIGER\nP', 'MADE IN CHINA\nS/G'];
+  for (const text of ko) assert.equal(detectSizeStrict(text, { anchored: true }), null, text);
+  assert.equal(normalizeSize('L/G'), 'L');
+  assert.equal(normalizeSize('S/P'), 'S');
+});
+
+test('tailles bilingues : âge et « taille : » prioritaires, grille ignorée, formes Vinted, pas de faux « P P »', () => {
+  const cases = [
+    ['TOMMY HILFIGER\n10 ANS\nM/M', '10 ans'],
+    ['CARTERS\n3 MOIS\nS/P', '3 mois'],
+    ['TOMMY HILFIGER\nTAILLE/SIZE: XL\nM/M', 'XL'],
+    ['TOMMY HILFIGER\nXS/TP S/P M/M L/G XL/TG', null],
+    ['TOMMY HILFIGER\n2XL/TTG', 'XXL'],
+    ['TOMMY HILFIGER\n2XL', 'XXL'],
+    ['100% COTON\nP / P', null],
+    ['MADE IN CHINA\nG G', null],
+    ['MADE IN PORTUGAL\nP/CH', null],
+  ];
+  for (const [text, want] of cases) assert.equal(detectSizeStrict(text, { anchored: true }), want, text);
+  const norm = [['2XL', 'XXL'], ['3XL', 'XXXL'], ['2X', 'XXL'], ['TG', 'XL'], ['TG/XG', 'XL'], ['M/G', 'M/G'], ['S/M', 'S/M'], ['M/L', 'M/L'], ['G', 'G'], ['4XL', '4XL']];
+  for (const [v, want] of norm) assert.equal(normalizeSize(v), want, v);
 });
 
 test('texte d’OCR réel (photo 2 du job lauraaix) → Tommy Hilfiger, M', () => {

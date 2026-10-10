@@ -17,7 +17,7 @@ import { hydrateIcons, icon } from './icons.js';
 const MAX_PHOTOS = 20;
 const PHOTO_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 }; // même cible que le téléphone : envoi rapide, étiquettes encore lisibles
 const TABS = ['annonce', 'file', 'comptes', 'reglages', 'journal'];
-const STUCK_MS = 10 * 60 * 1000; // « en cours » sans nouvelles depuis 10 min : on propose de relancer
+const STUCK_MS = 16 * 60 * 1000; // « en cours » sans nouvelles depuis 16 min (le PC date son statut à chaque page) : on propose de relancer
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -179,6 +179,22 @@ function renderHeader() {
   line.classList.toggle('err', !!(login && account.loggedOut));
 }
 
+const VERSION = chrome.runtime.getManifest().version;
+
+/** a < b pour des versions « 3.4.0 » (absente = pas comparable). */
+function versionLt(a, b) {
+  if (!a || !b) return false;
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
+  return false;
+}
+
+/** Ce profil attend qu'un autre profil Chrome ait fini (verrou du robot encore valable). */
+function waitingOther(ws) {
+  return !!ws.waitingFor?.holder && Date.parse(ws.waitingFor.until || 0) > Date.now();
+}
+
 async function renderRobotPill() {
   const ws = await store.getWorkerState();
   let view;
@@ -186,6 +202,7 @@ async function renderRobotPill() {
   else if (!settings.worker.enabled) view = ['off', 'Robot en pause', 'Réactivable dans les réglages'];
   else if (ws.current) view = ['busy', 'Remplissage en cours', ws.current.origin === 'manual' ? 'Annonce créée sur ce PC' : `Annonce ${ws.current.jobId}`];
   else if (ws.lastError) view = ['warn', 'Robot actif', `Erreur : ${ws.lastError}`];
+  else if (waitingOther(ws)) view = ['busy', 'En attente de son tour', ws.waitingFor.jobId ? `@${ws.waitingFor.holder} remplit Vinted` : `tour réservé à @${ws.waitingFor.holder}`];
   else view = ['ok', 'Robot actif', ws.lastPollAt ? `Vérifié ${timeAgo(ws.lastPollAt)}` : 'En attente d’annonces'];
   const [cls, title, sub] = view;
   const pill = $('robotPill');
@@ -196,6 +213,7 @@ async function renderRobotPill() {
   if (Date.now() - state.robotLineAt > 15000) {
     if (ws.current) setMsg($('robotLine'), `Remplissage en cours : ${ws.current.origin === 'manual' ? 'annonce créée sur ce PC' : ws.current.jobId}`, 'busy');
     else if (ws.lastError) setMsg($('robotLine'), `Dernière erreur du robot : ${ws.lastError}`, 'warn');
+    else if (waitingOther(ws) && settings.worker.enabled) setMsg($('robotLine'), `Un seul profil remplit Vinted à la fois : ${ws.waitingFor.jobId ? `@${ws.waitingFor.holder} est en cours` : `le tour est réservé à @${ws.waitingFor.holder}`}, ce profil prend la suite ensuite.`, 'busy');
     else setMsg($('robotLine'), '');
   }
 }
@@ -786,7 +804,7 @@ function queueItems(st) {
   return items.sort((a, b) => b.id.localeCompare(a.id));
 }
 
-const isOpen = (i) => i.state === 'pending' || i.state === 'processing';
+const isOpen = (i) => i.state === 'pending' || i.state === 'processing' || i.state === 'retry';
 const FILTERS = { all: () => true, open: isOpen, done: (i) => i.state === 'done', error: (i) => i.state === 'error' };
 
 function updateQueueCount(n) {
@@ -798,12 +816,19 @@ function updateQueueCount(n) {
 function statusView(i) {
   if (i.state === 'pending') return { cls: 'pending', label: 'En attente' };
   if (i.state === 'processing') return { cls: 'processing', label: 'En cours' };
+  if (i.state === 'retry') return { cls: 'pending', label: 'Nouvel essai prévu' };
   if (i.state === 'error') return { cls: 'error', label: 'Échec' };
   if (i.state === 'done') {
     const missing = (i.status?.fields || []).some((f) => f && f.ok === false);
     return missing ? { cls: 'partial', label: 'À compléter' } : { cls: 'done', label: 'Brouillon créé' };
   }
   return { cls: '', label: i.state || '?' };
+}
+
+/** Heure prévue du nouvel essai automatique (« 17:42 »), '' si inconnue. */
+function retryClock(status) {
+  const t = Date.parse(status?.retryAt || '');
+  return Number.isFinite(t) ? new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
 }
 
 function itemTitle(i) {
@@ -861,9 +886,15 @@ function rowHtml(i) {
     .filter(Boolean)
     .join('');
 
-  const msgKind = i.state === 'error' ? 'err' : st.cls === 'partial' ? 'warn' : i.state === 'done' ? 'ok' : '';
+  const msgKind = i.state === 'error' ? 'err' : st.cls === 'partial' || i.state === 'retry' ? 'warn' : i.state === 'done' ? 'ok' : '';
   let msg = s?.message || '';
   if (!msg && i.state === 'pending') msg = 'En attente : le profil Chrome de ce compte doit être ouvert sur le PC.';
+  if (i.state === 'retry') {
+    const late = Date.now() - Date.parse(s?.retryAt || 0) > 2 * 60 * 1000;
+    msg = late
+      ? `Nouvel essai en retard : le profil Chrome de @${i.account} doit être ouvert sur le PC. Cause du 1er échec : ${s?.lastError || 'inconnue'}`
+      : `Nouvel essai automatique${retryClock(s) ? ` vers ${retryClock(s)}` : ''} (rien à faire). Cause : ${s?.lastError || s?.message || 'inconnue'}`;
+  }
   if (stuck) msg = `${msg ? `${msg} ` : ''}Aucune nouvelle depuis plus de 10 minutes : tu peux relancer.`;
   const msgIc = msgKind === 'ok' ? 'checkCircle' : msgKind === 'err' ? 'alert' : msgKind === 'warn' ? 'alertTriangle' : i.state === 'pending' ? 'clock' : 'info';
 
@@ -888,7 +919,7 @@ function rowHtml(i) {
       </div>`
     : '';
 
-  const canRetry = (i.state === 'error' || stuck) && i.hasFiles;
+  const canRetry = (i.state === 'error' || i.state === 'retry' || stuck) && i.hasFiles;
   return `<article class="qrow${open ? ' is-open' : ''}" data-id="${esc(i.id)}">
     <div class="qrow-main">
       <span class="thumb">${i.thumb ? `<img src="${esc(i.thumb)}" alt="" loading="lazy" decoding="async">` : icon('image', { size: 22 })}</span>
@@ -1064,6 +1095,7 @@ $('pollBtn').addEventListener('click', () =>
     };
     state.robotLineAt = Date.now();
     if (res?.started) setMsg($('robotLine'), `Annonce ${res.started} prise en charge.`, 'ok');
+    else if (res?.skipped === 'locked') setMsg($('robotLine'), `@${res.holder || '?'} remplit Vinted en ce moment : ce profil prend la suite dès qu’il a fini (un seul à la fois).`, 'busy');
     else if (res?.error) setMsg($('robotLine'), `Erreur : ${res.error}`, 'err');
     else setMsg($('robotLine'), why[res?.skipped] || why.idle, 'info');
     await renderQueue();
@@ -1128,8 +1160,10 @@ async function renderAccounts() {
       const age = Date.now() - Date.parse(a.updatedAt || 0);
       const presence = age < 45 * 60 * 1000 ? 'on' : age < 24 * 3600 * 1000 ? 'mid' : 'off';
       const self = mine && safeLogin(a.login) === mine;
-      const sub = [a.domain, a.profile && `profil ${a.profile}`].filter(Boolean).join(' · ');
-      return `<div class="list-row">${avatarHtml(a.login, { cls: 'avatar-md', presence })}<span class="list-text"><b>@${esc(a.login)}${self ? '<span class="pill pill-accent pill-plain">Ce profil</span>' : ''}</b><small>${esc(sub || '—')}</small></span><span class="list-side${presence === 'on' ? ' on' : ''}">${a.updatedAt ? `vu ${esc(timeAgo(a.updatedAt))}` : ''}</span></div>`;
+      const sub = [a.domain, a.profile && `profil ${a.profile}`, a.ext && `extension ${a.ext}`].filter(Boolean).join(' · ');
+      const outdated = versionLt(a.ext, VERSION);
+      const warn = outdated ? `<small class="err">Extension à mettre à jour : sinon ce profil peut remplir Vinted en même temps qu’un autre.</small>` : '';
+      return `<div class="list-row">${avatarHtml(a.login, { cls: 'avatar-md', presence })}<span class="list-text"><b>@${esc(a.login)}${self ? '<span class="pill pill-accent pill-plain">Ce profil</span>' : ''}</b><small>${esc(sub || '—')}</small>${warn}</span><span class="list-side${presence === 'on' ? ' on' : ''}">${a.updatedAt ? `vu ${esc(timeAgo(a.updatedAt))}` : ''}</span></div>`;
     })
     .join('');
 }

@@ -15,7 +15,7 @@ import { GitHubRelay } from './shared/relay.js';
 import { CONDITIONS } from './shared/vinted-data.js';
 import { hydrateIcons, icon } from './icons.js';
 
-const VERSION = '3.4.0';
+const VERSION = '3.5.0';
 const MAX_PHOTOS = 20;
 const PREP_PARALLEL = 2; // photos compressées en même temps
 const UPLOAD_PARALLEL = 3; // photos envoyées en même temps
@@ -57,7 +57,18 @@ const LS = {
 let cfg = LS.get('cfg');
 let relay = null;
 let lastState = null;
+/** Verrou du robot (un seul profil remplit Vinted à la fois), lu avec l'état du relais. */
+let lastLock = null;
 let loadError = '';
+
+/** a < b pour des versions « 3.4.0 » (absente = pas comparable). */
+function versionLt(a, b) {
+  if (!a || !b) return false;
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
+  return false;
+}
 let refreshing = false;
 let refreshAgain = false; // actualisation demandée pendant une lecture en cours
 let pollTimer = null;
@@ -258,7 +269,9 @@ function renderAccountsRow() {
     ? accs
         .map((a) => {
           const p = presence(a);
-          return `<div class="acc" title="@${esc(a.login)} — ${esc(p.text)}">${avatar(a.login, { presenceCls: p.cls })}<span class="acc-text"><span class="acc-name">@${esc(a.login)}</span><span class="acc-seen ${p.cls}">${esc(p.text)}</span></span></div>`;
+          // Un profil resté sur une ancienne extension ignore le verrou : il remplirait en même temps qu'un autre.
+          if (versionLt(a.ext, VERSION)) Object.assign(p, { cls: 'warn', text: `extension ${a.ext} à mettre à jour` });
+          return `<div class="acc" title="@${esc(a.login)} — ${esc(p.text)}">${avatar(a.login, { presenceCls: p.cls === 'warn' ? 'mid' : p.cls })}<span class="acc-text"><span class="acc-name">@${esc(a.login)}</span><span class="acc-seen ${p.cls}">${esc(p.text)}</span></span></div>`;
         })
         .join('')
     : `<div class="acc-empty">${icon('monitor', { size: 20 })}<span>Aucun compte : ouvre Vinted dans chaque profil Chrome du PC (avec l’extension).</span></div>`;
@@ -291,12 +304,19 @@ function queueItems() {
 function statusView(i) {
   if (i.state === 'pending') return { cls: 'pending', label: 'En attente' };
   if (i.state === 'processing') return { cls: 'processing', label: 'En cours' };
+  if (i.state === 'retry') return { cls: 'pending', label: 'Nouvel essai prévu' };
   if (i.state === 'error') return { cls: 'error', label: 'Échec' };
   if (i.state === 'done') {
     const missing = (i.status?.fields || []).some((f) => f && f.ok === false);
     return missing ? { cls: 'partial', label: 'À compléter' } : { cls: 'done', label: 'Brouillon créé' };
   }
   return { cls: '', label: i.state || '?' };
+}
+
+/** Heure prévue du nouvel essai automatique (« 17:42 »), '' si inconnue. */
+function retryClock(status) {
+  const t = Date.parse(status?.retryAt || '');
+  return Number.isFinite(t) ? new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
 }
 
 function itemTitle(i) {
@@ -377,6 +397,7 @@ async function refresh({ spin = false } = {}) {
   if (spin) $('refreshBtn').classList.add('is-busy');
   try {
     lastState = await relay.state();
+    lastLock = await relay.readLock(lastState.snapshot).catch(() => null);
     loadError = '';
     callout($('homeMsg'), '');
     renderHome();
@@ -550,7 +571,8 @@ function openDetail(id) {
   const title = itemTitle(i);
   const reco = recognitionView(sum);
   const ph = photosView(i);
-  const stuck = i.state === 'processing' && Date.now() - Date.parse(s?.updatedAt || 0) > 10 * 60 * 1000;
+  // Le PC date le statut à chaque page Vinted ouverte : 16 min sans nouvelles = bloqué.
+  const stuck = i.state === 'processing' && Date.now() - Date.parse(s?.updatedAt || 0) > 16 * 60 * 1000;
   const hints = i.hints || {};
   const hintText = [hints.rayon && `rayon ${hints.rayon}`, hints.brand && `marque ${hints.brand}`, hints.size && `taille ${hints.size}`, hints.condition, hints.notes && `« ${hints.notes} »`].filter(Boolean).join(', ');
   const fields = (s?.fields || [])
@@ -559,12 +581,17 @@ function openDetail(id) {
     .join('');
   const seo = Number.isFinite(sum.seo) ? Math.max(0, Math.min(100, sum.seo)) : null;
   const tips = (sum.seoTodo || []).map((t) => `<li>${esc(t)}</li>`).join('');
-  const msgKind = i.state === 'error' ? 'err' : st.cls === 'partial' ? 'warn' : i.state === 'done' ? 'ok' : 'info';
+  const msgKind = i.state === 'error' ? 'err' : st.cls === 'partial' || i.state === 'retry' ? 'warn' : i.state === 'done' ? 'ok' : 'info';
   const meta = [`@${i.account}`, timeAgo(s?.updatedAt || idToIso(i.id))].filter(Boolean).join(' · ');
 
   let help = '';
-  if (i.state === 'pending') help = 'En attente : le profil Chrome de ce compte doit être ouvert sur le PC.';
-  else if (i.state === 'processing') help = stuck ? 'Aucune nouvelle depuis plus de 10 minutes : tu peux relancer.' : 'Le PC reconnaît l’article et remplit le formulaire Vinted.';
+  const lockBy = lastLock && Date.parse(lastLock.until || 0) > Date.now() ? lastLock.holder || lastLock.reservedFor || '' : '';
+  const retryLate = i.state === 'retry' && Date.now() - Date.parse(s?.retryAt || 0) > 2 * 60 * 1000;
+  if (i.state === 'pending' && lockBy && lockBy !== i.account) help = `En attente de son tour : @${lockBy} remplit Vinted en ce moment (un seul profil à la fois). Ça part juste après.`;
+  else if (i.state === 'pending') help = 'En attente : le profil Chrome de ce compte doit être ouvert sur le PC.';
+  else if (i.state === 'processing') help = stuck ? 'Aucune nouvelle depuis plus de 15 minutes : tu peux relancer.' : 'Le PC reconnaît l’article et remplit le formulaire Vinted.';
+  else if (retryLate) help = `Nouvel essai en retard : le profil Chrome de @${i.account} doit être ouvert sur le PC.`;
+  else if (i.state === 'retry') help = `Le PC réessaie tout seul${retryClock(s) ? ` vers ${retryClock(s)}` : ''}, page Vinted neuve : rien à faire. « Réessayer » relance tout de suite.`;
   else if (i.state === 'done') help = 'Retrouve-le dans Vinted → Profil → Mes brouillons, vérifie et publie.';
 
   const html = `
@@ -593,7 +620,7 @@ function openDetail(id) {
     ${tips ? `<ul class="tips">${tips}</ul>` : ''}
     ${help ? `<p class="hint">${esc(help)}</p>` : ''}
     <div class="sheet-actions">
-      ${(i.state === 'error' || stuck) && i.hasFiles ? `<button type="button" id="retryBtn" class="btn btn-secondary btn-lg">${icon('retry', { size: 18 })}Réessayer</button>` : ''}
+      ${(i.state === 'error' || i.state === 'retry' || stuck) && i.hasFiles ? `<button type="button" id="retryBtn" class="btn btn-secondary btn-lg">${icon('retry', { size: 18 })}Réessayer</button>` : ''}
       <button type="button" id="deleteBtn" class="btn btn-danger btn-lg">${icon('trash', { size: 18 })}${i.state === 'done' ? 'Retirer du suivi' : 'Supprimer'}</button>
     </div>`;
   openSheet(html, { type: 'detail', id, sig: detailSig(i) });

@@ -3,7 +3,7 @@
   "name": "Revendo — brouillons Vinted",
   "short_name": "Revendo",
   "description": "Brouillons Vinted depuis le téléphone : l'extension lit les étiquettes (sans IA) et crée le brouillon. Ne publie jamais.",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Ouvrir Revendo",
