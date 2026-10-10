@@ -1,12 +1,7 @@
 {
+  "state": "error",
+  "message": "Délai dépassé pendant le remplissage.",
   "id": "20261010-165357-rbe4",
   "account": "lauraaix",
-  "state": "processing",
-  "startedAt": "2026-10-10T16:55:11.451Z",
-  "updatedAt": "2026-10-10T16:55:11.451Z",
-  "worker": {
-    "login": "lauraaix",
-    "ext": "3.4.0",
-    "profile": ""
-  }
+  "updatedAt": "2026-10-10T17:01:27.217Z"
 }
