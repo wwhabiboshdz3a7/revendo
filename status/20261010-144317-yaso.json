@@ -1,0 +1,12 @@
+{
+  "id": "20261010-144317-yaso",
+  "account": "lauraaix",
+  "state": "processing",
+  "startedAt": "2026-10-10T14:45:23.328Z",
+  "updatedAt": "2026-10-10T14:45:23.329Z",
+  "worker": {
+    "login": "lauraaix",
+    "ext": "3.4.0",
+    "profile": ""
+  }
+}
