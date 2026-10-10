@@ -1,0 +1,12 @@
+{
+  "id": "20261010-162340-ei7g",
+  "account": "tms13.80",
+  "state": "processing",
+  "startedAt": "2026-10-10T16:24:20.624Z",
+  "updatedAt": "2026-10-10T16:24:20.624Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
