@@ -1,13 +1,18 @@
 Revendo v3.4.0 — installation de l'extension (Chrome ou Brave, Windows ou Mac)
 
-1. Dézippe revendo-extension-v3.4.0.zip : tu obtiens le dossier « revendo-extension-v3.4.0 ».
-   Le fichier manifest.json est directement dedans.
+1. Dézippe revendo-extension-v3.4.0.zip (Windows : clic droit → « Extraire tout… » ;
+   Mac : double-clic). Tu obtiens le dossier « revendo-extension-v3.4.0 » : le fichier
+   manifest.json est DIRECTEMENT dedans (avec les dossiers background, content, lib…).
 2. Ouvre chrome://extensions (ou brave://extensions) et active « Mode développeur ».
 3. Si une ancienne version de Revendo est installée : supprime-la (tes réglages sont à refaire
    avec le code de connexion), ou remplace ses fichiers puis clique 🔄 (réglages conservés).
 4. « Charger l'extension non empaquetée » → sélectionne le dossier « revendo-extension-v3.4.0 »
    lui-même (celui qui contient manifest.json), puis « Sélectionner ».
 5. À refaire dans chaque profil Chrome (un profil = un compte Vinted).
+
+Chrome dit « Fichier manifeste manquant ou illisible » ? Tu as choisi un dossier qui ne
+contient pas manifest.json (le zip lui-même, son dossier parent, ou le dossier du dépôt
+GitHub téléchargé en entier : dans ce cas, choisis son sous-dossier « extension »).
 
 Aucune IA, aucune clé à fournir : la marque, la taille et la composition sont lues sur les
 étiquettes (lecteur intégré à l'extension), la catégorie est choisie parmi celles que Vinted

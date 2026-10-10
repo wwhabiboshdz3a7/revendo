@@ -21,10 +21,12 @@ Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`
 
 ### Installer l'extension
 
-1. Dézippe `revendo-extension-v3.4.0.zip`.
+1. Dézippe `revendo-extension-v3.4.0.zip` (Windows : clic droit → « Extraire tout… »).
+   Le dossier `revendo-extension-v3.4.0` obtenu contient directement `manifest.json`.
 2. Ouvre `chrome://extensions` (ou `brave://extensions`) et active **Mode développeur**.
 3. **Charger l'extension non empaquetée** → choisis le dossier `revendo-extension-v3.4.0`
-   (celui qui contient `manifest.json`).
+   (celui qui contient `manifest.json`). « Fichier manifeste manquant » = mauvais
+   dossier : si tu as téléchargé tout le dépôt, choisis son sous-dossier `extension/`.
    Pour mettre à jour une ancienne version : remplace ses fichiers puis clique 🔄
    sur la carte de l'extension (les réglages sont gardés).
 4. Recommence dans **chaque profil Chrome** : un profil = un compte Vinted connecté.
@@ -39,7 +41,7 @@ Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`
 ### Mettre le dashboard téléphone sur Netlify
 
 - **Le plus simple** : dézippe `revendo-web-v3.4.0.zip` et glisse le dossier
-  `revendo-web-v3.4.0` sur [app.netlify.com/drop](https://app.netlify.com/drop)
+  `revendo-web-v3.4.0` (qui contient directement `index.html`) sur [app.netlify.com/drop](https://app.netlify.com/drop)
   (ou dans l'onglet *Deploys* du site existant pour le mettre à jour).
 - **Ou relié à GitHub** : *Add new site → Import from Git* → ce dépôt, branche
   qui contient le code. `netlify.toml` publie le dossier `web/` et ne
@@ -110,6 +112,8 @@ comme une app.
   ticket de prix ou un code-barres est lu.
 - **Téléphone** : une photo marquée « étiquette » part en haute définition
   (2048 px) pour que le PC lise la marque et la taille.
+- **Zips** : fichiers à la racine. Avant, « Extraire tout » de Windows créait
+  deux dossiers l'un dans l'autre et Chrome ne trouvait pas le manifeste.
 
 ## Nouveautés de la v3.3.0
 

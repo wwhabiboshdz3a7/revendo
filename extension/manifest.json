@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Revendo — brouillons Vinted",
   "short_name": "Revendo",
-  "description": "Prépare tes annonces Vinted depuis le téléphone : photos + prix, l'extension lit les étiquettes (sans IA) et crée le brouillon sur le bon compte. Ne publie jamais à ta place.",
+  "description": "Brouillons Vinted depuis le téléphone : l'extension lit les étiquettes (sans IA) et crée le brouillon. Ne publie jamais.",
   "version": "3.4.0",
   "minimum_chrome_version": "116",
   "action": {
