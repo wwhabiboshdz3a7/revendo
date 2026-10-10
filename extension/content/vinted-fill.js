@@ -16,7 +16,9 @@
  *     déduites des photos et du titre (lignes avec fil d'Ariane « A > B »),
  *     avant « Tous » ; sinon recherche « Trouver une catégorie » ;
  *   • marque : recherche « Rechercher une marque », et pour une marque
- *     absente du catalogue la ligne « Utiliser "X" comme marque » ;
+ *     absente du catalogue la ligne « Utiliser "X" comme marque » ; les
+ *     textes d'étiquette non reconnus (candidats) n'y sont acceptés que s'ils
+ *     correspondent EXACTEMENT à une marque du catalogue Vinted ;
  *   • tailles, couleurs : certaines cases ignorent les clics simulés → on
  *     passe alors par un vrai clic (débogueur Chrome, via le service worker).
  */
@@ -308,13 +310,20 @@
     return false;
   }
 
-  /** Remonte d'une étiquette (« M / 38 / 10 ») à la case cliquable dont le texte est identique. */
+  /**
+   * Remonte d'une étiquette (« M / 38 / 10 ») à la case cliquable dont le texte
+   * est identique — sans dépasser la liste ni un bloc qui contient un champ
+   * (une recherche qui ne renvoie qu'UNE marque laissait remonter jusqu'au
+   * bloc du formulaire, et le clic ne choisissait rien).
+   */
   function chipHost(el) {
     const t = (el.textContent || '').trim();
     let host = el;
     for (let d = 0; d < 4; d += 1) {
       const p = host.parentElement;
       if (!p || (p.textContent || '').trim() !== t) break;
+      if (/^(UL|OL|MAIN|FORM|BODY)$/.test(p.tagName) || p.matches('[role="listbox"], [role="list"], [role="dialog"], [role="menu"]')) break;
+      if (p.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea, select')) break;
       host = p;
     }
     return host;
@@ -661,10 +670,22 @@
     return 0;
   }
 
-  function catScore(el, { kw, rayon, path, context }) {
+  /** Mots d'indice (étiquette, marque spécialisée) présents dans le nom ou le fil d'Ariane. */
+  function hintHits(text, words) {
+    return (words || []).filter((w) => w && new RegExp(`(^|[^a-z0-9])${escapeRx(w)}`).test(text)).length;
+  }
+
+  /**
+   * Note d'une catégorie proposée. kw (catégorie connue) : le nom doit la
+   * contenir. Sinon : ordre de Vinted (la 1re est la plus probable), rayon,
+   * mots d'indice (« chaussures » pour Converse, « jeans » pour une taille W32…),
+   * catégories de niche pénalisées sauf indice contraire.
+   */
+  function catScore(el, { kw, rayon, path, context, words = [] }, index = 0) {
     const [name = '', ...rest] = lines(el);
     const crumbs = normalize(rest.join(' '));
-    let s = kw ? wordTier(name, kw) : 50;
+    const all = `${normalize(name)} ${crumbs}`;
+    let s = kw ? wordTier(name, kw) : 50 - 4 * index;
     if (!s) return -Infinity;
     if (rayon) {
       if (crumbs) s += crumbs.startsWith(normalize(rayon)) ? 25 : -60;
@@ -672,7 +693,11 @@
       if (/enfant|bebe|fille|garcon/.test(crumbs) && !/enfant|bebe|fille|garcon|ans\b/.test(context)) s -= 50;
     }
     for (const w of normalize(path || '').split(/[^a-z]+/).filter((x) => x.length >= 4)) if (crumbs.includes(w)) s += 6;
-    for (const rx of NICHES) if (rx.test(crumbs + ' ' + normalize(name)) && !rx.test(context)) s -= 45;
+    if (!kw && words.length) {
+      const hits = hintHits(all, words);
+      s += hits ? 18 + 6 * Math.min(2, hits - 1) : -10;
+    }
+    for (const rx of NICHES) if (rx.test(all) && !rx.test(context)) s -= 45;
     return s;
   }
 
@@ -687,90 +712,126 @@
     return rows;
   }
 
+  /** Lignes recommandées par Vinted, attendues jusqu'à `ms` (elles arrivent parfois après l'ouverture du menu). */
+  async function waitRecos(panel, ms) {
+    return (await waitFor(() => (recoRows(panel).length ? recoRows(panel) : null), ms, 300)) || [];
+  }
+
+  /** Recherche « Trouver une catégorie » : meilleure ligne pour `term` (note ≥ 70), ou null. */
+  async function searchCategory(panel, term, ctx, committed, done) {
+    const search = await waitFor(panel.search, 2500);
+    if (!search) return null;
+    const terms = [...new Set([term, term.split(/\s+/)[0]])].filter((t) => t.length >= 3);
+    for (const t of terms) {
+      typeText(search, t);
+      await sleep(900);
+      if (!panel.options().some((o) => wordTier(lines(o)[0] || '', t))) {
+        if (await trustedType(search, t)) await sleep(900);
+      }
+      const rank = () =>
+        panel
+          .options()
+          .map((el) => ({ el, s: catScore(el, { ...ctx, kw: t }) }))
+          .sort((a, b) => b.s - a.s)[0];
+      let best = rank();
+      if (best && best.s >= 70) {
+        if (await commitClick(best.el, committed)) return done(best.el, `recherche « ${t} »`);
+        // Branche (sous-menu) au lieu d'une catégorie finale : on choisit dans le niveau ouvert.
+        await sleep(500);
+        best = rank();
+        if (best && best.s >= 60 && (await commitClick(best.el, committed))) return done(best.el, `recherche « ${t} »`);
+      }
+    }
+    typeText(search, '');
+    await sleep(500);
+    return null;
+  }
+
+  /**
+   * Catégorie, sans IA :
+   *  1) recommandations de Vinted (calculées depuis les photos), classées avec
+   *     le rayon et les indices de l'étiquette / de la marque ;
+   *  2) sinon (ou si aucune ne colle aux indices), recherche du terme connu ;
+   *  3) repli : meilleure recommandation compatible avec le rayon.
+   * job.category (saisie sur le PC) est exigée telle quelle.
+   */
   async function selectCategory(job) {
     const trigger = await waitFor(SEL.category, 6000);
     if (!trigger) return { ok: false, detail: 'champ introuvable' };
     const committed = () => (SEL.category()?.value || '').trim();
     if (committed()) return { ok: true, detail: committed(), name: committed() };
 
-    const panel = await openPanel(trigger);
-    if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
-    await sleep(600);
-    const context = normalize(`${job.title || ''} ${job.category || ''} ${job.categoryPath || ''} ${job.rayon || ''}`);
-    const ctx = { kw: job.category || '', rayon: job.rayon || '', path: job.categoryPath || '', context };
+    const hints = job.categoryHints || {};
+    const rayon = job.rayon || hints.rayon || '';
+    const words = (hints.words || []).map(normalize).filter(Boolean);
+    const context = normalize(`${job.title || ''} ${job.category || ''} ${job.categoryPath || ''} ${rayon} ${words.join(' ')}`);
+    const ctx = { kw: job.category || '', rayon, path: job.categoryPath || '', context, words };
     const done = (el, how) => {
       const [name, ...rest] = lines(el);
       return { ok: true, detail: `${committed()}${rest.length ? ` (${rest.join(' ')})` : ''} — ${how}`, name: committed() || name, path: rest.join(' ') };
     };
 
-    // 1) Recommandations de Vinted (photos + titre).
-    const recos = recoRows(panel);
-    if (recos.length) {
-      const scored = recos.map((el) => ({ el, s: catScore(el, ctx) })).sort((a, b) => b.s - a.s);
-      const pick = ctx.kw ? (scored[0].s >= 70 ? scored[0] : null) : scored[0].s > 0 ? scored[0] : null;
-      if (pick && (await commitClick(pick.el, committed))) return done(pick.el, 'recommandée par Vinted');
+    let panel = await openPanel(trigger);
+    if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
+    let recos = await waitRecos(panel, 6000);
+    if (!recos.length) {
+      // Vinted calcule encore ses recommandations : on referme et on rouvre une fois.
+      await closePanel();
+      await sleep(3000);
+      panel = await openPanel(trigger);
+      if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
+      recos = await waitRecos(panel, 6000);
+    }
+    const ranked = recos.map((el, i) => ({ el, s: catScore(el, ctx, i), hits: hintHits(normalize(lines(el).join(' ')), words) })).sort((a, b) => b.s - a.s);
+
+    // 1) Recommandations de Vinted.
+    const top = ranked[0];
+    const fitsHints = !words.length || (top && top.hits > 0);
+    if (top && (ctx.kw ? top.s >= 70 : top.s > 0 && fitsHints)) {
+      if (await commitClick(top.el, committed)) return done(top.el, 'recommandée par Vinted');
     }
 
-    // 2) Recherche « Trouver une catégorie ».
-    if (ctx.kw) {
-      const search = await waitFor(panel.search, 2500);
-      if (search) {
-        const terms = [...new Set([ctx.kw, ctx.kw.split(/\s+/)[0]])].filter((t) => t.length >= 3);
-        for (const term of terms) {
-          typeText(search, term);
-          await sleep(900);
-          if (!panel.options().some((o) => wordTier(lines(o)[0] || '', term))) {
-            if (await trustedType(search, term)) await sleep(900);
-          }
-          let best = panel
-            .options()
-            .map((el) => ({ el, s: catScore(el, { ...ctx, kw: term }) }))
-            .sort((a, b) => b.s - a.s)[0];
-          if (best && best.s >= 70) {
-            if (await commitClick(best.el, committed)) return done(best.el, `recherche « ${term} »`);
-            // Branche (sous-menu) au lieu d'une catégorie finale : on choisit dans le niveau ouvert.
-            await sleep(500);
-            best = panel
-              .options()
-              .map((el) => ({ el, s: catScore(el, { ...ctx, kw: term }) }))
-              .sort((a, b) => b.s - a.s)[0];
-            if (best && best.s >= 60 && (await commitClick(best.el, committed))) return done(best.el, `recherche « ${term} »`);
-          }
-        }
-        typeText(search, '');
-        await sleep(500);
-      }
+    // 2) Recherche : catégorie saisie, sinon terme déduit (taille W32 → « Jeans », Converse → « Baskets »).
+    const term = ctx.kw || hints.search || '';
+    if (term) {
+      const found = await searchCategory(panel, term, ctx, committed, done);
+      if (found) return found;
     }
 
-    // 3) Repli : première recommandation compatible avec le rayon.
-    if (recos.length) {
-      const fallback = recos
-        .filter((el) => el.isConnected)
-        .map((el) => ({ el, s: catScore(el, { ...ctx, kw: '' }) }))
-        .sort((a, b) => b.s - a.s)[0];
-      if (fallback && fallback.s > 0 && (await commitClick(fallback.el, committed))) return done(fallback.el, 'recommandation Vinted (repli)');
-    }
+    // 3) Repli : meilleure recommandation compatible avec le rayon (relue : la recherche a pu redessiner la liste).
+    const again = recos.some((el) => el.isConnected) ? recos.filter((el) => el.isConnected) : recoRows(panel);
+    const fallback = again
+      .map((el, i) => ({ el, s: catScore(el, { ...ctx, kw: '', words: [] }, i) }))
+      .sort((a, b) => b.s - a.s)[0];
+    if (fallback && fallback.s > 0 && (await commitClick(fallback.el, committed))) return done(fallback.el, 'recommandation Vinted (repli)');
     await closePanel();
-    return { ok: false, detail: `aucune catégorie sûre pour « ${ctx.kw || 'cet article'} »${ctx.rayon ? ` (${ctx.rayon})` : ''}` };
+    const what = ctx.kw || hints.search || 'cet article';
+    return { ok: false, detail: recos.length ? `aucune catégorie sûre pour « ${what} »${rayon ? ` (${rayon})` : ''}` : 'Vinted n’a proposé aucune catégorie (photos ?)' };
   }
 
   // ---------- Marque ----------
 
-  async function selectBrand(brand) {
+  /**
+   * Marque. `brand` (lue sur l'étiquette ou saisie) : ligne exacte, sinon
+   * « Utiliser "X" comme marque ». `candidates` (textes d'étiquette inconnus) :
+   * acceptés seulement s'ils sont EXACTEMENT une marque du catalogue Vinted
+   * (jamais créés) — renvoie alors { verified: true, name }.
+   */
+  async function selectBrand(brand, candidates = []) {
     const trigger = await waitFor(SEL.brand, 4000);
     if (!trigger) return { ok: true, skip: true, detail: 'pas de marque pour cette catégorie' };
     const committed = () => (SEL.brand()?.value || '').trim();
-    const target = normalize(brand);
-    const exact = (el) => normalize(labelOf(el)) === target;
+    const slugOf = (v) => normalize(v).replace(/[^a-z0-9]/g, '');
 
     const panel = await openPanel(trigger);
     if (!panel) return { ok: false, detail: "le menu ne s'est pas ouvert" };
     await sleep(500);
 
-    const tryRows = async () => {
+    const tryRows = async (target) => {
+      const want = slugOf(target);
       const rows = panel
         .options()
-        .filter(exact)
+        .filter((el) => slugOf(labelOf(el)) === want)
         .map((el) => chipHost(el))
         .sort((a, b) => Number(inSuggestions(a)) - Number(inSuggestions(b)));
       for (const row of rows.slice(0, 4)) {
@@ -779,32 +840,51 @@
       }
       return false;
     };
+    const isCreate = (o) => /utiliser .* comme marque|use .* as brand/i.test(labelOf(o));
+    const typeSearch = async (search, text) => {
+      typeText(search, text);
+      const want = slugOf(text);
+      const hit = await waitFor(() => panel.options().some((o) => slugOf(labelOf(o)) === want || isCreate(o)), 5000);
+      if (!hit && (await trustedType(search, text))) await sleep(1500);
+    };
 
-    if (await tryRows()) {
-      await closePanel();
-      return { ok: true, detail: committed() };
-    }
-    const search = await waitFor(panel.search, 2500);
-    if (search) {
-      typeText(search, brand);
-      const hit = await waitFor(
-        () => panel.options().some(exact) || panel.options().some((o) => /utiliser .* comme marque|use .* as brand/i.test(labelOf(o))),
-        5000,
-      );
-      if (!hit && (await trustedType(search, brand))) await sleep(1500);
-      if (await tryRows()) {
+    if (brand) {
+      if (await tryRows(brand)) {
         await closePanel();
         return { ok: true, detail: committed() };
       }
-      const create = panel.options().find((o) => /utiliser .* comme marque|use .* as brand/i.test(labelOf(o)));
-      if (create && (await commitClick(chipHost(create), committed))) {
-        await closePanel();
-        return { ok: true, detail: `${committed()} (nouvelle marque)` };
+      const search = await waitFor(panel.search, 2500);
+      if (search) {
+        await typeSearch(search, brand);
+        if (await tryRows(brand)) {
+          await closePanel();
+          return { ok: true, detail: committed() };
+        }
+        const create = panel.options().find(isCreate);
+        if (create && (await commitClick(chipHost(create), committed))) {
+          await closePanel();
+          return { ok: true, detail: `${committed()} (nouvelle marque)` };
+        }
+        typeText(search, '');
+      }
+      await closePanel();
+      return { ok: false, detail: `« ${brand} » introuvable` };
+    }
+
+    // Textes d'étiquette inconnus : vérifiés dans le catalogue de marques de Vinted.
+    const search = await waitFor(panel.search, 2500);
+    if (search) {
+      for (const cand of candidates.slice(0, 3)) {
+        await typeSearch(search, cand);
+        if (await tryRows(cand)) {
+          await closePanel();
+          return { ok: true, verified: true, name: committed(), detail: `${committed()} (lue sur l’étiquette, trouvée dans les marques Vinted)` };
+        }
       }
       typeText(search, '');
     }
     await closePanel();
-    return { ok: false, detail: `« ${brand} » introuvable` };
+    return { ok: false, detail: `illisible sur l’étiquette${candidates.length ? ` (essayé : ${candidates.slice(0, 3).join(', ')})` : ''} — à choisir` };
   }
 
   async function dismissAuthenticityModal() {
@@ -1042,15 +1122,6 @@
     // Les recommandations de catégorie viennent des photos : envois terminés d'abord.
     await settleUploads(30000);
     const cat = await step('Catégorie', true, () => selectCategory(job));
-    if (job.composeAfterCategory && cat?.ok) {
-      // Mode gratuit : titre et description composés d'après la catégorie choisie par Vinted.
-      const composed = await send('RV_COMPOSE', { categoryName: cat.name, categoryPath: cat.path });
-      if (composed?.ok) {
-        job.title = composed.title;
-        await step('Titre', true, () => fillText(SEL.title, composed.title));
-        await step('Description', true, () => fillText(SEL.desc, composed.description));
-      }
-    }
     if (cat?.ok) {
       await waitFor(() => SEL.status() || SEL.brand() || SEL.size(), 8000, 300);
       await sleep(500);
@@ -1058,8 +1129,21 @@
 
     // Sans catégorie, Vinted n'affiche pas les lignes suivantes : on les note « à faire ».
     const afterCat = (fn) => (cat?.ok ? fn() : Promise.resolve({ ok: false, detail: 'à choisir après la catégorie' }));
-    await step('Marque', !!job.brand, () => afterCat(() => selectBrand(job.brand)));
+    const candidates = Array.isArray(job.brandCandidates) ? job.brandCandidates : [];
+    const brand = await step('Marque', !!job.brand || candidates.length > 0, () => afterCat(() => selectBrand(job.brand, candidates)));
     await dismissAuthenticityModal();
+    const verifiedBrand = brand?.verified && brand.name ? brand.name : '';
+
+    if ((job.composeAfterCategory && cat?.ok) || verifiedBrand) {
+      // Titre et description composés d'après la catégorie choisie sur Vinted (et la marque trouvée sur Vinted).
+      const recompose = job.composeAfterCategory && cat?.ok;
+      const composed = await send('RV_COMPOSE', { categoryName: recompose ? cat.name : '', categoryPath: recompose ? cat.path || '' : '', brand: verifiedBrand });
+      if (composed?.ok && composed.title) {
+        job.title = composed.title;
+        await step('Titre', true, () => fillText(SEL.title, composed.title));
+        await step('Description', true, () => fillText(SEL.desc, composed.description));
+      }
+    }
     await step('Taille', !!job.size, () => afterCat(() => selectSize(job.size)));
     await step('État', !!job.condition, () => afterCat(() => selectCondition(job.condition)));
     await step('Couleur', !!job.colors?.length, () => afterCat(() => selectMulti(SEL.color, job.colors.slice(0, 2), 'couleur')));
@@ -1218,11 +1302,9 @@
         who = `Revendo${job.account?.login ? ` · compte @${job.account.login}` : ''}`;
         setState(r, 'busy', 'Remplissage du brouillon…');
         const rec = job.recognition || {};
-        const mode =
-          rec.mode === 'ai' ? `Reconnaissance IA${rec.model ? ` (${rec.model})` : ''}` : rec.mode === 'manual' ? 'Fiche saisie sur le PC' : 'Mode gratuit (recommandations Vinted)';
+        const mode = rec.mode === 'manual' ? 'Fiche saisie sur le PC' : 'Reconnaissance : étiquettes + catégories proposées par Vinted';
         meta = `<div class="meta">${esc(mode)}</div>`;
-        if (rec.mode === 'free' && rec.error) meta += `<div class="msg warn">IA indisponible : ${esc(rec.error)}</div>`;
-        else if (rec.mode === 'free' && rec.noKey) meta += '<div class="note">Aucune clé IA configurée : marque et catégorie sont devinées sans IA.</div>';
+        if (rec.ocr?.error) meta += `<div class="msg warn">Lecture des étiquettes impossible : ${esc(rec.ocr.error)}</div>`;
         r.getElementById('b').innerHTML = `<div class="now">Ne touche à rien pendant ~1 minute.</div>${meta}`;
       },
       progress(label) {

@@ -114,12 +114,19 @@ const handlers = {
   async RV_WHOAMI(_msg, sender) {
     return jobs.whoAmI(sender.tab.id);
   },
+  /**
+   * Titre et description recomposés pendant le remplissage : d'après la
+   * catégorie choisie sur Vinted (categoryName) et/ou la marque trouvée dans
+   * le catalogue de marques de Vinted (brand).
+   */
   async RV_COMPOSE(msg, sender) {
     const ctx = await store.getTabJob(sender.tab.id);
     if (!ctx) return { ok: false };
     const s = await store.getSettings();
-    const listing = composeListing({ ...ctx.listing, title: '' }, s, { categoryName: msg.categoryName || '', photoCount: ctx.photos.length });
-    ctx.listing = { ...ctx.listing, title: listing.title, description: listing.description, seo: listing.seo };
+    const base = { ...ctx.listing, ...(msg.brand ? { brand: msg.brand, brandFrom: 'vinted' } : {}) };
+    if (msg.categoryName) base.title = '';
+    const listing = composeListing(base, s, { categoryName: msg.categoryName || '', photoCount: ctx.photos.length });
+    ctx.listing = { ...base, title: listing.title, description: listing.description, seo: listing.seo };
     await store.setTabJob(sender.tab.id, ctx);
     return { ok: true, title: listing.title, description: listing.description };
   },

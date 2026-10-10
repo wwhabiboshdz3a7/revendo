@@ -316,7 +316,6 @@ input[type="number"].input { padding-right: 6px; }
 
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; }
-.grid-ai { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); }
 .row-gap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
 .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
@@ -438,7 +437,6 @@ input[type="number"].input { padding-right: 6px; }
   font-size: 12px; font-weight: 550; color: var(--text-2); white-space: nowrap;
 }
 .tag span { overflow: hidden; text-overflow: ellipsis; }
-.tag.ai { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
 .tag.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn-text); }
 .tag.ok { background: var(--ok-soft); border-color: transparent; color: var(--ok-text); }
 
@@ -719,6 +717,10 @@ input[type="number"].input { padding-right: 6px; }
 .settings-intro h2 { margin-top: 12px; font-size: 15.5px; line-height: 1.35; }
 .settings-intro p { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.55; }
 .settings-intro b { color: var(--text); font-weight: 600; }
+.facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.facts li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 10px; align-items: start; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.facts li > span:first-child { color: var(--accent-text); padding-top: 2px; }
+.facts b { color: var(--text); font-weight: 600; }
 .settings-state { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px !important; }
 .settings-state:empty { display: none; }
 .settings-body { min-width: 0; }

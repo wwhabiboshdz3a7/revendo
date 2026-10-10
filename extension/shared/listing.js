@@ -1,10 +1,12 @@
 /**
  * Revendo — composition d'annonce (titre, description, hashtags) et détections
- * textuelles (taille, marque, matières). Fonctions pures, testables en Node.
+ * textuelles SANS IA (taille, marque, matières, indices de catégorie lus sur
+ * les étiquettes). Fonctions pures, testables en Node.
  */
 import {
   BRAND_ALIASES,
   BRAND_AMBIGUOUS,
+  BRAND_HINTS,
   BRANDS,
   CATEGORY_DEFS,
   COLOR_NAMES,
@@ -232,7 +234,7 @@ function isLabelLine(line) {
   return LABEL_LINE.test(line) || !!detectBrand(line) || !!detectBrandFuzzy(line);
 }
 
-/** Taille renvoyée par l'IA → format Vinted (« 10Y » → « 10 ans », « m » → « M », « W32 L34 » → « W32 »). */
+/** Taille lue ou saisie → format Vinted (« 10Y » → « 10 ans », « m » → « M », « W32 L34 » → « W32 »). */
 export function normalizeSize(value) {
   let s = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!s || /^(unknown|inconnue?|n\/a|na|none|aucune?|non visible|illisible|-+|\?+)$/i.test(s)) return '';
@@ -339,6 +341,9 @@ export function editDistance(a, b, max = Infinity) {
 
 let fuzzyCache = null;
 
+/** Terminaisons ordinaires (pluriels, accords, conjugaisons) : jamais du bruit d'OCR collé à une marque. */
+const WORD_ENDINGS = new Set(['s', 'e', 'x', 'd', 'r', 'es', 'ed', 'er', 'ly', 'al', 'ia', 'ie', 'en', 'ne', 'le', 'te', 'se', 'ss']);
+
 /** Repli des confusions typiques de l'OCR : 0→o, 1/i→l, 5→s, 8→b… */
 const OCR_FOLD = { 0: 'o', 1: 'l', i: 'l', 5: 's', 8: 'b', 6: 'g', 9: 'g', 4: 'a', 7: 't', 3: 'e', 2: 'z' };
 const ocrFold = (s) => s.replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/[0-9i]/g, (c) => OCR_FOLD[c] || c);
@@ -410,8 +415,11 @@ export function detectBrandFuzzy(text, brands = BRANDS) {
       if (win.length < 5) continue;
       const fw = ocrFold(win);
       for (const c of cands) {
-        if (Math.abs(fw.length - c.f.length) > 2 || (c.exact && fw !== c.f)) continue;
-        const d = fuzzyCost(fw, c.f);
+        if (Math.abs(fw.length - c.f.length) > 2) continue;
+        // « TOMMYn », « LACOSTEa » : 1 ou 2 caractères parasites collés au mot par l'OCR (mot seul
+        // uniquement), sauf une terminaison de mot ordinaire (« converses », « diesels », « fossile »).
+        const glued = w === 0 && fw.length > c.f.length && fw.startsWith(c.f) && c.f.length >= 5 && !WORD_ENDINGS.has(fw.slice(c.f.length));
+        const d = glued ? 1 : c.exact ? (fw === c.f ? 0 : -1) : fuzzyCost(fw, c.f);
         if (d < 0) continue;
         if (!best || d < best.d || (d === best.d && c.s.length > best.len)) best = { name: c.name, d, len: c.s.length };
       }
@@ -459,7 +467,7 @@ function properCase(s) {
 }
 
 /**
- * Orthographe officielle d'une marque déjà lue (IA, saisie) : égalité de slug
+ * Orthographe officielle d'une marque déjà lue (étiquette, saisie) : égalité de slug
  * avec BRANDS ou BRAND_ALIASES (« TOMMY HILFIGER » → « Tommy Hilfiger »,
  * « levis » → « Levi's », « the northface » → « The North Face »), en ignorant
  * les mots décoratifs (« GANT USA » → « Gant »). Marque inconnue : gardée telle
@@ -631,11 +639,6 @@ const CLOSERS = [
   'Dispo pour toute question, je réponds rapidement 😊',
 ];
 
-/**
- * Description complète. Si `f.aiBody` est fourni (texte rédigé par l'IA), il
- * remplace la phrase d'intro générique. Les lignes « Taille : … » servent
- * aussi à Vinted, qui en déduit ses suggestions de taille/marque.
- */
 /** Autres noms que les acheteurs tapent pour la MÊME catégorie (jamais une info inventée sur l'article). */
 const CATEGORY_SYNONYMS = {
   Pulls: ['sweater', 'tricot'],
@@ -686,25 +689,22 @@ export function summarySentence(f) {
  * à partir des seules infos saisies : phrase d'accroche, synthèse
  * (type + marque + couleur + matière + taille au format recherché), état,
  * caractéristiques une par ligne, autres noms de la catégorie, puis hashtags.
- * Si `f.aiBody` est fourni (texte rédigé par l'IA), il remplace la phrase d'intro.
+ * Les lignes « Taille : … » servent aussi à Vinted, qui en déduit ses
+ * suggestions de taille.
  */
 export function buildDescription(f, { hashtags = 80, signature = '', rand = Math.random } = {}) {
   const def = findCategoryDef(f.category || f.title || '');
   const out = [];
   out.push(pick(OPENERS, rand), '');
-  if (f.aiBody) {
-    out.push(f.aiBody.trim());
-  } else {
-    let line = `Je vends ${withDeterminer(f.title || '', f.brand)}`;
-    if (f.brand && !normalize(f.title || '').includes(normalize(f.brand))) line += ` de la marque ${f.brand}`;
-    out.push(line + '.');
-  }
+  let line = `Je vends ${withDeterminer(f.title || '', f.brand)}`;
+  if (f.brand && !normalize(f.title || '').includes(normalize(f.brand))) line += ` de la marque ${f.brand}`;
+  out.push(line + '.');
   // Synthèse : seulement si elle apporte une info absente du titre (matière, couleur, taille…).
   const summary = summarySentence(f);
   const t = normalize(f.title || '');
   const adds = [f.brand, ...(f.colors || []), ...(f.materials || []), f.size].filter(Boolean).some((v) => !t.includes(normalize(v)));
   if (summary && adds) out.push(summary);
-  if (!f.aiBody && CONDITION_TEXT[f.condition]) out.push(CONDITION_TEXT[f.condition]);
+  if (CONDITION_TEXT[f.condition]) out.push(CONDITION_TEXT[f.condition]);
   out.push("Photos réelles de l'article. Je peux t'envoyer des mesures précises ou d'autres photos sur demande.");
 
   const details = [];
@@ -728,26 +728,133 @@ export function buildDescription(f, { hashtags = 80, signature = '', rand = Math
 }
 
 // ---------------------------------------------------------------------------
-// Fusion des sources : indices saisis > IA > détection locale > défauts
+// Indices lus sur les étiquettes (sans IA)
+// ---------------------------------------------------------------------------
+
+const KIDS_TEXT = /\b(?:\d{1,2}\s?(?:ans|years?|yrs|mois|months?|jahre|años|anni)|kids?|enfants?|junior|baby|b[ée]b[ée]|toddler|newborn|naissance|girls?|boys?|fille|gar[çc]on)\b/i;
+const WOMEN_TEXT = /\b(?:women'?s?|woman|ladies|lady|femmes?|damen|donna|mujer)\b/i;
+const MEN_TEXT = /\b(?:men'?s|men|homme|hommes|herren|uomo|hombre)\b/i;
+
+/**
+ * Indices d'une étiquette ou d'un ticket : rayon (« WOMEN », « 10 ans »…),
+ * jean (taille W/L), ticket de prix ou code-barres (article neuf avec étiquette).
+ */
+export function labelClues(text) {
+  const t = String(text || '');
+  const clues = { rayon: '', words: [], search: '', newWithTag: false };
+  if (KIDS_TEXT.test(t)) clues.rayon = 'Enfants';
+  else if (WOMEN_TEXT.test(t) && !MEN_TEXT.test(t.replace(/women/gi, ''))) clues.rayon = 'Femmes';
+  else if (MEN_TEXT.test(t.replace(/women/gi, '')) && !WOMEN_TEXT.test(t)) clues.rayon = 'Hommes';
+  if (/\bW\s?\d{2}\s*[/x]?\s*L\s?\d{2}\b/i.test(t)) {
+    clues.words.push('jeans', 'jean');
+    clues.search = 'Jeans';
+  }
+  // Ticket : prix (« 29,99 € », « EUR 35.00 ») ou code-barres EAN (12–13 chiffres).
+  const flat = t.replace(/\s+/g, ' ');
+  if (/(?:\d{1,4}[,.]\d{2}\s?(?:€|eur\b)|(?:€|\beur)\s?\d{1,4}[,.]\d{2})/i.test(flat) || /(?:^|\D)\d{12,13}(?:\D|$)/.test(flat)) clues.newWithTag = true;
+  return clues;
+}
+
+let hintIndex = null;
+
+/** Indices de catégorie d'une marque spécialisée (BRAND_HINTS), ou null. */
+export function brandHints(brand) {
+  if (!brand) return null;
+  if (!hintIndex) {
+    hintIndex = new Map();
+    for (const group of BRAND_HINTS) for (const b of group.brands) hintIndex.set(slug(b), group);
+  }
+  return hintIndex.get(slug(brand)) || null;
+}
+
+/**
+ * Indices pour choisir la catégorie sur Vinted, sans IA :
+ * { rayon, words, search } — rayon saisi > étiquette > marque ; words = mots
+ * attendus dans la catégorie (nom ou fil d'Ariane) ; search = terme à taper
+ * si Vinted ne recommande rien.
+ */
+export function categoryHints({ rayon = '', text = '', brand = '' } = {}) {
+  const fromLabel = labelClues(text);
+  const fromBrand = brandHints(brand);
+  const words = [...new Set([...fromLabel.words, ...(fromBrand?.words || [])].map(normalize))];
+  return {
+    rayon: (RAYONS.includes(rayon) && rayon) || fromLabel.rayon || fromBrand?.rayon || '',
+    words,
+    search: fromLabel.search || fromBrand?.search || '',
+  };
+}
+
+/** Mots d'étiquette qui ne sont jamais une marque (composition, entretien, origine, tailles). */
+const LABEL_WORDS = new Set(
+  (
+    'made in fabrique fabriqué en hecho prodotto hergestellt china chine bangladesh turkey turquie india inde vietnam cambodia cambodge ' +
+    'pakistan portugal italy italie france morocco maroc tunisia tunisie indonesia indonesie sri lanka myanmar romania roumanie ' +
+    'madagascar egypt egypte mauritius maurice usa uk spain espagne size taille talla taglia größe groesse tg sz ' +
+    'cotton coton algodon cotone baumwolle polyester poliester elastane elasthanne spandex lycra viscose rayon wool laine lana wolle ' +
+    'nylon polyamide polyamid acrylic acrylique acryl linen lin leinen silk soie seta seda cashmere cachemire leather cuir ' +
+    'wash lavage laver lavar dry clean iron repasser bleach tumble do not ne pas only with similar colours colors inside out ' +
+    'rn ca style ref art lot model modele modèle col color colour couleur front back body lining doublure shell main ' +
+    'women woman men man homme femme kids enfant girl boy unisex fit slim regular loose original authentic quality premium ' +
+    'the and et de des du la le les of for by'
+  ).split(/\s+/),
+);
+
+/**
+ * Candidats « marque » pris dans le texte le plus gros et le plus net des
+ * étiquettes (lignes des zones relues de près), quand aucune marque connue
+ * n'a été trouvée : ils seront VÉRIFIÉS dans la recherche de marques de
+ * Vinted (égalité exacte uniquement), jamais pris tels quels.
+ * lines = [{ text, h (hauteur des lettres, px), conf (0–100) }].
+ */
+export function brandCandidates(lines, max = 3) {
+  const out = new Map();
+  for (const line of lines || []) {
+    if (!line || (line.conf ?? 0) < 75) continue;
+    const words = String(line.text || '')
+      .replace(/[^\p{L}\p{N}&'’.\- ]+/gu, ' ')
+      .split(/\s+/)
+      .map((w) => w.replace(/^[.'’\-]+|[.'’\-]+$/g, ''))
+      .filter(Boolean);
+    // Mots d'étiquette en tête ou en fin de ligne retirés (« MADE IN … », « … COTTON »).
+    while (words.length && LABEL_WORDS.has(normalize(words[0]))) words.shift();
+    while (words.length && LABEL_WORDS.has(normalize(words[words.length - 1]))) words.pop();
+    if (!words.length || words.length > 4) continue;
+    if (words.some((w) => LABEL_WORDS.has(normalize(w)) && w.length > 3)) continue;
+    const name = words.join(' ');
+    const letters = (name.match(/\p{L}/gu) || []).length;
+    if (letters < 4 || name.length > 30 || /\d{2,}/.test(name)) continue;
+    if (/^(?:[A-Z]{1,3}|[a-z]+)$/.test(name) && letters < 5) continue; // « XL », « ok » : bruit ou taille
+    const upper = name === name.toUpperCase();
+    const score = (line.h || 10) * ((line.conf || 0) / 100) * (upper ? 1.2 : 1);
+    const key = slug(name);
+    if (!out.has(key) || out.get(key).score < score) out.set(key, { name: properCase(name), score });
+  }
+  return [...out.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map((c) => c.name);
+}
+
+// ---------------------------------------------------------------------------
+// Fusion des sources : indices saisis > étiquette > défauts
 // ---------------------------------------------------------------------------
 
 /** La marque retenue est ramenée à l'orthographe officielle (canonicalBrand). */
-export function mergeFields({ hints = {}, ai = null, local = null, defaults = {} }) {
+export function mergeFields({ hints = {}, local = null, defaults = {} }) {
   const first = (...vals) => vals.find((v) => v !== undefined && v !== null && String(v).trim() !== '');
   const firstArr = (...vals) => vals.find((v) => Array.isArray(v) && v.length) || [];
   const merged = {
-    rayon: first(hints.rayon, ai?.rayon, local?.rayon, defaults.rayon) || '',
-    category: first(hints.category, ai?.category, local?.category) || '',
-    categoryPath: first(ai?.categoryPath) || '',
-    brand: canonicalBrand(first(hints.brand, ai?.brand, local?.brand) || ''),
-    size: first(hints.size, ai?.size, local?.size) || '',
-    colors: firstArr(hints.colors, ai?.colors, local?.colors).slice(0, 2),
-    materials: firstArr(hints.materials, ai?.materials, local?.materials).slice(0, 3),
-    condition: first(hints.condition, ai?.condition, defaults.condition) || 'Très bon état',
-    package: first(hints.package, ai?.package) || '',
-    title: first(hints.title, ai?.title) || '',
-    aiBody: first(ai?.description) || '',
-    notes: first(hints.notes, ai?.notes) || '',
+    rayon: first(hints.rayon, local?.rayon, defaults.rayon) || '',
+    category: first(hints.category) || '',
+    categoryPath: '',
+    brand: canonicalBrand(first(hints.brand, local?.brand) || ''),
+    size: normalizeSize(first(hints.size, local?.size) || ''),
+    colors: firstArr(hints.colors, local?.colors).slice(0, 2),
+    materials: firstArr(hints.materials, local?.materials).slice(0, 3),
+    condition: first(hints.condition, local?.condition, defaults.condition) || 'Très bon état',
+    package: first(hints.package) || '',
+    title: first(hints.title) || '',
+    notes: first(hints.notes) || '',
     keywords: Array.isArray(hints.keywords) ? hints.keywords.slice(0, 12) : [],
     price: hints.price ?? '',
   };
@@ -755,8 +862,8 @@ export function mergeFields({ hints = {}, ai = null, local = null, defaults = {}
   if (!CONDITIONS.some((c) => c.name === merged.condition)) merged.condition = 'Très bon état';
   merged.colors = merged.colors.filter((c) => COLOR_NAMES.includes(c));
   merged.materials = merged.materials.filter((m) => MATERIALS.includes(m));
-  // Sans catégorie (mode gratuit), le titre est composé APRÈS le choix de
-  // catégorie sur Vinted (voir composeListing / RV_COMPOSE).
+  // Sans catégorie, le titre est composé APRÈS le choix de catégorie sur
+  // Vinted (voir composeListing / RV_COMPOSE).
   if (!merged.title && merged.category) merged.title = buildTitle(merged);
   return merged;
 }

@@ -1,22 +1,38 @@
 /**
- * Revendo — reconnaissance de l'article à partir des photos.
- *  - Avec une clé IA (Gemini gratuit, OpenAI…) : lecture des étiquettes
- *    d'abord, puis catégorie, marque, taille, couleurs, matières, état, titre
- *    et texte ; seconde passe « étiquette » en haute définition si la marque
- *    ou la taille manque.
- *  - Sans clé (mode gratuit) : couleur dominante (analyse des pixels) +
- *    lecture des étiquettes par OCR (marque, taille, composition). La
- *    catégorie est alors choisie sur Vinted à partir de SES propres
- *    recommandations (calculées depuis les photos).
- * Le mode gratuit complète toujours ce que l'IA n'a pas trouvé.
+ * Revendo — reconnaissance de l'article à partir des photos, SANS IA :
+ *  - lecture des étiquettes (OCR Tesseract embarqué, voir offscreen/) :
+ *    marque, taille, composition, rayon (« WOMEN », « 10 ans »), ticket de
+ *    prix (neuf avec étiquette) ; chaque zone de texte est recadrée,
+ *    agrandie et redressée avant d'être lue ;
+ *  - couleur dominante votée sur plusieurs photos (analyse des pixels) ;
+ *  - indices de catégorie (étiquette + marque spécialisée) ; la catégorie
+ *    elle-même est choisie sur Vinted parmi SES recommandations (calculées
+ *    depuis les photos), classées avec ces indices ;
+ *  - marque inconnue de notre liste : les textes les plus gros de l'étiquette
+ *    sont vérifiés dans la recherche de marques de Vinted au remplissage.
  */
-import { MAX_AI_IMAGES, pickPhotosForAi, recognizeItem } from '../shared/ai.js';
-import { dominantColors, pickListingColors } from '../shared/colors.js';
+import { dominantColors, pickListingColors, voteColors } from '../shared/colors.js';
 import { getPixels, toJpeg } from '../shared/image.js';
-import { buildDescription, buildTitle, detectBrand, detectBrandFuzzy, detectMaterials, detectSizeStrict, mergeFields } from '../shared/listing.js';
+import {
+  brandCandidates,
+  buildDescription,
+  buildTitle,
+  categoryHints,
+  detectBrand,
+  detectBrandFuzzy,
+  detectMaterials,
+  detectSizeStrict,
+  labelClues,
+  mergeFields,
+} from '../shared/listing.js';
 import { analyzeListing, optimizeTitle } from '../shared/seo.js';
 
 const dataUrl = (p) => `data:${p.mime || 'image/jpeg'};base64,${p.base64}`;
+
+/** Photos lues au plus (les étiquettes marquées d'abord). */
+const MAX_OCR_PHOTOS = 10;
+/** Au-delà, plus de lecture rapprochée des zones (la lecture complète continue). */
+const ZONE_BUDGET_MS = 45000;
 
 /**
  * Dimensions d'un JPEG lues dans son en-tête (marqueur SOF), sans le décoder.
@@ -84,23 +100,29 @@ async function ensureOffscreen() {
 }
 
 /**
- * Délai maximal de l'OCR (premier téléchargement des packs de langue compris).
- * Sans lui, un téléchargement figé (CDN injoignable, proxy…) bloquait
- * l'analyse, donc le robot, indéfiniment.
+ * Délai maximal de lecture d'UNE photo (la première charge aussi le moteur et
+ * les packs de langue). Sans lui, un moteur figé bloquait l'analyse, donc le
+ * robot, indéfiniment.
  */
-const ocrTimeoutMs = (count) => 60000 + 10000 * count;
+const OCR_PHOTO_TIMEOUT_MS = 60000;
 
-/** Texte lu sur chaque image (même ordre). opts.retryUpsideDown : relit à 180° une image presque vide. */
-export async function ocrImages(images, opts = {}) {
+/**
+ * Lit une photo (dataURL) : { text, score, lines, regions }.
+ * opts.label : photo marquée « étiquette » ; opts.deadline : fin des lectures rapprochées.
+ */
+export async function ocrPhoto(image, opts = {}) {
   await ensureOffscreen();
   let timer = null;
   const timeout = new Promise((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('OCR trop long (packs de langue injoignables ?)')), ocrTimeoutMs(images.length));
+    timer = setTimeout(() => reject(new Error('Lecture des étiquettes trop longue')), OCR_PHOTO_TIMEOUT_MS);
   });
   try {
-    const res = await Promise.race([chrome.runtime.sendMessage({ target: 'offscreen', type: 'RV_OCR', images, ...opts }), timeout]);
-    if (!res?.ok) throw new Error(res?.error || 'OCR indisponible');
-    return res.texts || [];
+    const res = await Promise.race([
+      chrome.runtime.sendMessage({ target: 'offscreen', type: 'RV_OCR_PHOTO', image, label: !!opts.label, deadline: opts.deadline || 0 }),
+      timeout,
+    ]);
+    if (!res?.ok) throw new Error(res?.error || 'lecture des étiquettes indisponible');
+    return { text: res.text || '', score: res.score || 0, lines: res.lines || [], regions: res.regions || 0 };
   } finally {
     clearTimeout(timer);
   }
@@ -110,124 +132,116 @@ export async function ocrImages(images, opts = {}) {
 // Analyse
 // ---------------------------------------------------------------------------
 
+/** Ce qu'on sait d'un texte d'étiquettes : marque, taille, matières, indices. */
+export function readLabels(text) {
+  return {
+    brand: detectBrand(text) || detectBrandFuzzy(text) || '',
+    size: detectSizeStrict(text, { anchored: true }) || '',
+    materials: detectMaterials(text),
+    clues: labelClues(text),
+  };
+}
+
 /**
- * Mode gratuit : couleur dominante (photo principale) + OCR des photos
- * d'étiquette, sinon de TOUTES les photos (8 max), à leur résolution
- * d'origine (≤ 1600 px : on ne réduit pas davantage, l'OCR en a besoin).
+ * Lecture des étiquettes : photos marquées d'abord, puis les autres dans
+ * l'ordre (10 au plus). On s'arrête dès que marque ET taille sont lues (les
+ * photos marquées sont toujours lues). Une photo qu'on ne peut pas décoder
+ * est sautée ; un moteur qui ne démarre pas (ou se fige) arrête la lecture.
  */
-async function localAnalysis(photos, { ocr = true, colors = true, labelIndexes = [] } = {}) {
-  const out = { colors: [], brand: '', size: '', materials: [], ocrText: '' };
-  if (colors) {
+async function readAllLabels(photos, labelIndexes, { read = ocrPhoto, now = Date.now, prepare = atMost } = {}) {
+  const order = [...labelIndexes, ...photos.map((_, i) => i).filter((i) => !labelIndexes.includes(i))].slice(0, MAX_OCR_PHOTOS);
+  const deadline = now() + ZONE_BUDGET_MS;
+  const out = { text: '', lines: [], scores: new Map(), read: 0, error: '' };
+  const texts = [];
+  for (const i of order) {
+    const isLabel = labelIndexes.includes(i);
+    if (!isLabel && out.read > 0) {
+      const sofar = readLabels(texts.join('\n'));
+      if (sofar.brand && sofar.size) break;
+    }
+    let image;
     try {
-      // Couleur sur la première photo qui n'est pas un gros plan d'étiquette.
-      const main = photos.find((_, i) => !labelIndexes.includes(i)) || photos[0];
-      const px = await getPixels(dataUrl(main), 160);
-      out.colors = pickListingColors(dominantColors(px.data, px.width, px.height));
+      // Étiquette marquée : envoyée en haute définition par le téléphone, lue telle quelle (2048 px).
+      image = await prepare(photos[i], isLabel ? 2048 : 1600, 0.92);
     } catch (err) {
-      console.warn('[Revendo] couleur', err);
+      console.warn('[Revendo] photo illisible pour la lecture des étiquettes', i, err);
+      continue;
+    }
+    try {
+      const res = await read(image, { label: isLabel, deadline });
+      texts.push(res.text);
+      out.lines.push(...res.lines);
+      out.scores.set(i, res.score);
+      out.read += 1;
+    } catch (err) {
+      // Moteur qui ne démarre pas ou figé : inutile d'essayer les autres photos.
+      out.error = err?.message || String(err);
+      console.warn('[Revendo] lecture des étiquettes', i, err);
+      break;
     }
   }
-  if (ocr) {
-    try {
-      const idx = (labelIndexes.length ? labelIndexes : photos.map((_, i) => i)).slice(0, 8);
-      const imgs = [];
-      for (const i of idx) {
-        try {
-          imgs.push(await atMost(photos[i], 1600, 0.92));
-        } catch (err) {
-          console.warn('[Revendo] photo illisible pour l’OCR', i, err);
-        }
-      }
-      const text = (await ocrImages(imgs, { retryUpsideDown: labelIndexes.length > 0 })).join('\n');
-      out.ocrText = text.slice(0, 4000);
-      out.brand = detectBrand(text) || detectBrandFuzzy(text) || '';
-      out.size = detectSizeStrict(text, { anchored: true }) || '';
-      out.materials = detectMaterials(text);
-    } catch (err) {
-      console.warn('[Revendo] OCR', err);
-    }
-  }
+  out.text = texts.join('\n').slice(0, 8000);
   return out;
 }
 
 /**
- * Images pour la passe principale : 8 au plus, toutes les photos d'étiquette
- * comprises (1600 px, qualité 0,88 — gardées telles quelles si elles sont
- * déjà assez petites, pour ne pas dégrader le texte), les autres en 1280 px
- * (qualité 0,82). Chaque image garde l'indice de sa photo d'origine.
+ * Couleur : vote sur 3 photos de l'article au plus (ni étiquette marquée, ni
+ * photo où l'on a lu beaucoup de texte), la première comptant davantage.
  */
-async function prepareAiImages(photos, labelIndexes) {
-  const labels = new Set(labelIndexes);
-  const images = [];
-  for (const i of pickPhotosForAi(photos.length, labelIndexes, MAX_AI_IMAGES)) {
-    const label = labels.has(i);
+async function colorsOf(photos, skip) {
+  const picked = photos.map((_, i) => i).filter((i) => !skip.has(i)).slice(0, 3);
+  if (!picked.length && photos.length) picked.push(0);
+  const votes = [];
+  for (const [k, i] of picked.entries()) {
     try {
-      const url = label ? await atMost(photos[i], 1600, 0.88) : (await toJpeg(dataUrl(photos[i]), { maxSide: 1280, quality: 0.82 })).dataUrl;
-      images.push({ url, index: i, label });
+      const px = await getPixels(dataUrl(photos[i]), 160);
+      votes.push({ colors: dominantColors(px.data, px.width, px.height), weight: k === 0 ? 1.5 : 1 });
     } catch (err) {
-      console.warn('[Revendo] photo illisible', i, err);
+      console.warn('[Revendo] couleur', i, err);
     }
   }
-  return images;
-}
-
-/** Photos d'étiquette en haute définition (2048 px, qualité 0,9) pour la seconde passe. */
-async function labelImagesHD(photos, indexes) {
-  const out = [];
-  for (const i of indexes) {
-    if (!photos[i]) continue;
-    try {
-      out.push(await atMost(photos[i], 2048, 0.9));
-    } catch (err) {
-      console.warn('[Revendo] photo d’étiquette illisible', i, err);
-    }
-  }
-  return out;
+  return pickListingColors(voteColors(votes));
 }
 
 /**
- * photos = [{ base64, mime }], hints = indices saisis (prix, rayon, marque,
- * labelIndexes…). Renvoie { fields, recognition, local } :
- * recognition = { mode: 'ai'|'free', model, error (pourquoi l'IA n'a pas servi,
- * '' sinon), noKey (aucune clé IA dans ce profil), passes (0, 1 ou 2) }.
+ * photos = [{ base64, mime }], hints = ce que le vendeur a saisi (prix, rayon,
+ * marque, taille, état, labelIndexes…). Renvoie { fields, recognition, local } :
+ * fields.categoryHints = { rayon, words, search } et fields.brandCandidates
+ * (à vérifier sur Vinted) servent au remplissage ; recognition résume ce qui
+ * a été trouvé et d'où ({ mode: 'auto', found: { brand, size, … }, ocr }).
  */
-export async function analyzePhotos({ photos, hints = {}, settings }) {
-  const key = String(settings.ai?.key || '').trim();
-  const recognition = { mode: 'free', model: '', error: '', noKey: !key, passes: 0 };
+export async function analyzePhotos({ photos, hints = {}, settings = {} }, deps = {}) {
   const labelIndexes = validIndexes(hints.labelIndexes, photos.length);
-  let ai = null;
-  if (key && !hints.skipAi) {
-    if (settings.ai?.enabled === false) {
-      recognition.error = 'IA désactivée dans les réglages';
-    } else {
-      try {
-        const images = await prepareAiImages(photos, labelIndexes);
-        ai = await recognizeItem({
-          images,
-          hints: { ...hints, labelIndexes },
-          config: settings.ai,
-          timeoutMs: 90000,
-          labelTimeoutMs: 45000,
-          labelImages: (idx) => labelImagesHD(photos, idx),
-        });
-        recognition.mode = 'ai';
-        recognition.model = ai.model;
-        recognition.passes = ai.passes;
-      } catch (err) {
-        recognition.error = err?.message || String(err);
-        console.warn('[Revendo] IA', err?.detail || err);
-      }
-    }
+  const recognition = { mode: 'auto', found: {}, ocr: { photos: 0, error: '' } };
+  const local = { brand: '', size: '', materials: [], colors: [], rayon: '', condition: '' };
+  let labels = { text: '', lines: [], scores: new Map(), read: 0, error: '' };
+  const wantOcr = settings.worker?.ocr !== false && photos.length > 0;
+  if (wantOcr) {
+    labels = await readAllLabels(photos, labelIndexes, deps);
+    recognition.ocr = { photos: labels.read, error: labels.error };
+    const found = readLabels(labels.text);
+    Object.assign(local, { brand: found.brand, size: found.size, materials: found.materials, rayon: found.clues.rayon });
+    if (found.clues.newWithTag) local.condition = 'Neuf avec étiquette';
   }
-  // Le mode gratuit complète ce que l'IA n'a pas trouvé (ou la remplace si elle a échoué).
-  const needBrand = !hints.brand && !ai?.brand;
-  const needSize = !hints.size && !ai?.size;
-  const needColors = !ai?.colors?.length;
-  const local =
-    needBrand || needSize || needColors
-      ? await localAnalysis(photos, { ocr: settings.worker?.ocr !== false && (needBrand || needSize || !ai), colors: needColors, labelIndexes })
-      : null;
-  const fields = mergeFields({ hints, ai, local, defaults: { condition: settings.worker?.defaultCondition } });
+  // Photos « étiquette » (marquées ou très textuelles) : pas pour la couleur.
+  const skip = new Set(labelIndexes);
+  for (const [i, score] of labels.scores) if (score >= 8) skip.add(i);
+  if (!hints.colors?.length) local.colors = await (deps.colors || colorsOf)(photos, skip);
+
+  const fields = mergeFields({ hints, local, defaults: { condition: settings.worker?.defaultCondition } });
+  fields.categoryHints = categoryHints({ rayon: fields.rayon, text: labels.text, brand: fields.brand });
+  if (!fields.rayon && fields.categoryHints.rayon) fields.rayon = fields.categoryHints.rayon;
+  fields.brandCandidates = fields.brand ? [] : brandCandidates(labels.lines);
+
+  const from = (typed, readValue) => (typed ? 'saisie' : readValue ? 'étiquette' : '');
+  recognition.found = {
+    brand: from(hints.brand, local.brand),
+    size: from(hints.size, local.size),
+    materials: from(hints.materials?.length, local.materials.length),
+    rayon: from(hints.rayon, local.rayon || fields.categoryHints.rayon),
+    condition: hints.condition ? 'saisie' : local.condition ? 'étiquette' : '',
+    colors: hints.colors?.length ? 'saisie' : local.colors.length ? 'photos' : '',
+  };
   return { fields, recognition, local };
 }
 

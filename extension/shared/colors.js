@@ -1,5 +1,5 @@
 /**
- * Revendo — couleur dominante d'un article (mode gratuit, sans IA).
+ * Revendo — couleur dominante d'un article (sans IA).
  * On estime la couleur du fond à partir des bords de la photo, on l'écarte,
  * puis on regroupe les pixels restants (k-moyennes dans l'espace Lab) et on
  * associe chaque groupe à la pastille Vinted la plus proche.
@@ -153,11 +153,45 @@ export function dominantColors(pixels, width, height, { k = 4 } = {}) {
 const SHADE_PAIRS = new Set(['Marine|Noir', 'Bleu|Marine', 'Blanc|Crème', 'Beige|Crème']);
 const sameShade = (a, b) => SHADE_PAIRS.has([a, b].sort().join('|'));
 
+/**
+ * Un article marine photographié dans la pénombre donne beaucoup de « noir » :
+ * dès que le marine pèse au moins 60 % du noir, c'est un article marine (un
+ * vrai noir ne donne presque pas de marine).
+ */
+function navyInShadow(dominant) {
+  const share = (n) => dominant.find((c) => c.name === n)?.share || 0;
+  const navy = share('Marine');
+  const black = share('Noir');
+  if (!navy || !black || navy < 0.6 * black) return dominant;
+  return dominant
+    .filter((c) => c.name !== 'Noir')
+    .map((c) => (c.name === 'Marine' ? { ...c, share: navy + black } : c))
+    .sort((a, b) => b.share - a.share);
+}
+
 /** 1 ou 2 couleurs Vinted pour l'annonce. */
 export function pickListingColors(dominant) {
   if (!dominant?.length) return [];
+  dominant = navyInShadow(dominant);
   const out = [dominant[0].name];
   const second = dominant[1];
   if (second && second.share >= 0.28 && second.name !== dominant[0].name && !sameShade(second.name, dominant[0].name)) out.push(second.name);
   return out;
+}
+
+/**
+ * Vote de plusieurs photos du même article : parts additionnées, pondérées
+ * (votes = [{ colors: dominantColors(...), weight }]). Une ombre ou un reflet
+ * sur une seule photo ne décide plus de la couleur.
+ */
+export function voteColors(votes) {
+  const acc = new Map();
+  let total = 0;
+  for (const { colors, weight = 1 } of votes || []) {
+    if (!colors?.length) continue;
+    total += weight;
+    for (const c of colors) acc.set(c.name, (acc.get(c.name) || 0) + c.share * weight);
+  }
+  if (!total) return [];
+  return [...acc.entries()].map(([name, share]) => ({ name, share: share / total })).sort((a, b) => b.share - a.share);
 }

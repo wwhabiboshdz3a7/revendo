@@ -164,7 +164,7 @@ test('shrinkPhotos : petites photos intactes, échec de décodage → original g
   assert.deepEqual(await jobs.shrinkPhotos([]), []);
 });
 
-test('finalizeTab : le résumé porte aiError, aiModel, noKey et photos { sent, shown }', async () => {
+test('finalizeTab : le résumé porte ce qui a été lu (found), l’erreur de lecture et photos { sent, shown }', async () => {
   const tabId = 42;
   await chrome.storage.local.set({
     [`rv_tab_${tabId}`]: {
@@ -172,7 +172,14 @@ test('finalizeTab : le résumé porte aiError, aiModel, noKey et photos { sent, 
       jobId: 'manuel-1',
       jobAccount: '',
       thumb: '',
-      listing: { title: 'Pull Tommy Hilfiger', price: '25', autoSave: true, recognition: { mode: 'free', model: '', error: 'HTTP 429 (quota)', noKey: false } },
+      listing: {
+        title: 'Pull Tommy Hilfiger',
+        price: '25',
+        autoSave: true,
+        brand: 'Polène',
+        brandFrom: 'vinted', // marque trouvée dans le catalogue Vinted pendant le remplissage
+        recognition: { mode: 'auto', found: { brand: '', size: 'étiquette' }, ocr: { photos: 3, error: 'Lecture des étiquettes trop longue' } },
+      },
       photos: Array.from({ length: 7 }, (_, i) => ({ name: `${i + 1}.jpg`, base64: 'AA' })),
       account: { id: '1', login: 'lauraaix', domain: 'www.vinted.fr' },
       windowId: 1,
@@ -197,11 +204,12 @@ test('finalizeTab : le résumé porte aiError, aiModel, noKey et photos { sent, 
   }
   const { rv_last_result: st, rv_log: journal } = await chrome.storage.local.get(['rv_last_result', 'rv_log']);
   assert.equal(st.state, 'done');
-  assert.equal(st.summary.mode, 'free');
-  assert.equal(st.summary.aiError, 'HTTP 429 (quota)');
-  assert.equal(st.summary.aiModel, '');
-  assert.equal(st.summary.noKey, false);
+  assert.equal(st.summary.mode, 'auto');
+  assert.deepEqual(st.summary.found, { brand: 'vinted', size: 'étiquette' });
+  assert.equal(st.summary.ocrError, 'Lecture des étiquettes trop longue');
+  assert.equal(st.summary.brand, 'Polène');
+  for (const old of ['aiError', 'aiModel', 'noKey']) assert.ok(!(old in st.summary), old);
   assert.deepEqual(st.summary.photos, { sent: 7, shown: 7 });
-  assert.match(journal[0].message, /IA indisponible \(HTTP 429 \(quota\)\)/);
+  assert.match(journal[0].message, /lecture des étiquettes impossible \(Lecture des étiquettes trop longue\)/);
   assert.equal((await chrome.storage.local.get(`rv_tab_${tabId}`))[`rv_tab_${tabId}`], undefined);
 });

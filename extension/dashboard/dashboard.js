@@ -5,7 +5,6 @@
  * Icônes : SVG inline de ./icons.js (aucun emoji d'interface).
  */
 /* global qrcode */
-import { AI_PRESETS, testAi } from '../shared/ai.js';
 import { decodeConnection, encodeConnection, phoneLink } from '../shared/config.js';
 import { toJpeg, toJpegTarget } from '../shared/image.js';
 import { buildDescription, buildTitle, detectSize, findCategoryDef, formatPriceFR, normalize, parsePrice } from '../shared/listing.js';
@@ -16,7 +15,7 @@ import * as store from '../background/store.js';
 import { hydrateIcons, icon } from './icons.js';
 
 const MAX_PHOTOS = 20;
-const PHOTO_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 }; // même cible que le téléphone : envoi rapide, assez net pour l'IA
+const PHOTO_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 }; // même cible que le téléphone : envoi rapide, étiquettes encore lisibles
 const TABS = ['annonce', 'file', 'comptes', 'reglages', 'journal'];
 const STUCK_MS = 10 * 60 * 1000; // « en cours » sans nouvelles depuis 10 min : on propose de relancer
 
@@ -39,8 +38,8 @@ const state = {
   accountsError: '',
   touched: { title: false, category: false, brand: false, size: false },
   keywords: [], // mots-clés « boost référencement » validés par l'utilisateur
-  aiBody: '',
-  recognition: null, // résultat de la dernière reconnaissance (mode, modèle, erreur…)
+  recognition: null, // résultat de la dernière lecture des photos (ce qui a été trouvé, erreur de lecture…)
+  recognized: null, // { categoryHints, brandCandidates } de cette lecture, pour le remplissage sur Vinted
   seo: null, // dernier score de référencement { score, grade }
   tab: 'annonce',
   queue: null, // éléments de la file (dernière lecture du relais)
@@ -233,9 +232,6 @@ function buildStaticControls() {
   $('material1').innerHTML = matOpts;
   $('material2').innerHTML = matOpts;
   $('wCondition').innerHTML = CONDITIONS.map((c) => `<option>${esc(c.name)}</option>`).join('');
-  $('aiPreset').innerHTML = Object.entries(AI_PRESETS)
-    .map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`)
-    .join('');
   $('seoTips').innerHTML = SEO_TIPS.map((t) => `<li>${esc(t)}</li>`).join('');
 }
 
@@ -451,7 +447,7 @@ function regenerate() {
     }
   }
   const title = f.title || (f.category ? buildTitle(f) : '');
-  $('description').value = buildDescription({ ...f, title, aiBody: state.aiBody || '' }, { hashtags: settings.profile.hashtags, signature: settings.profile.signature });
+  $('description').value = buildDescription({ ...f, title }, { hashtags: settings.profile.hashtags, signature: settings.profile.signature });
   renderDescCount();
   renderSeo();
 }
@@ -606,7 +602,7 @@ function applyFields(f) {
   $('material1').value = f.materials?.[0] || '';
   $('material2').value = f.materials?.[1] || '';
   if (f.package) $('parcel').value = f.package;
-  state.aiBody = f.aiBody || '';
+  state.recognized = { categoryHints: f.categoryHints || null, brandCandidates: f.brandCandidates || [] };
   renderRayons();
   renderConditions();
   renderColors();
@@ -615,14 +611,16 @@ function applyFields(f) {
   regenerate();
 }
 
-/** Phrase de résultat : mode utilisé (IA + modèle, ou mode gratuit et pourquoi) + ce qui a été trouvé. */
+/** Phrase de résultat : ce qui a été lu sur les étiquettes, et ce qui sera choisi sur Vinted. */
 function recognitionSummary(r = {}, f = {}) {
-  const found = [f.category && `catégorie ${f.category}`, f.brand && `marque ${f.brand}`, f.size && `taille ${f.size}`, f.colors?.length && f.colors.join('/')].filter(Boolean).join(' · ') || 'rien de sûr';
-  const tail = !f.category ? ' · catégorie choisie parmi les recommandations de Vinted' : '';
-  if (r.mode === 'ai') return { text: `IA${r.model ? ` · ${r.model}` : ''} : ${found}`, kind: 'ok' };
-  if (r.error) return { text: `Mode gratuit — IA indisponible : ${r.error}. Trouvé : ${found}${tail}`, kind: 'warn' };
-  if (r.noKey) return { text: `Mode gratuit — pas de clé IA : ${found}${tail}`, kind: 'warn' };
-  return { text: `Mode gratuit : ${found}${tail}`, kind: 'ok' };
+  const found = [f.brand && `marque ${f.brand}`, f.size && `taille ${f.size}`, f.colors?.length && f.colors.join('/'), f.materials?.length && f.materials.join(', ')]
+    .filter(Boolean)
+    .join(' · ');
+  const tail = f.category ? '' : ' Catégorie : choisie parmi les propositions de Vinted.';
+  const tries = !f.brand && f.brandCandidates?.length ? ` Marque à vérifier sur Vinted : ${f.brandCandidates.join(', ')}.` : '';
+  if (r.ocr?.error) return { text: `Lecture des étiquettes impossible (${r.ocr.error}). ${found ? `Trouvé : ${found}.` : ''}${tail}`, kind: 'warn' };
+  if (!found) return { text: `Rien de lisible sur les étiquettes : photographie l’étiquette de près.${tries}${tail}`, kind: 'warn' };
+  return { text: `Lu sur les photos : ${found}.${tries}${tail}`, kind: 'ok' };
 }
 
 let analyzing = null; // analyse en cours : « Créer » attend son résultat au lieu de partir sans
@@ -633,7 +631,7 @@ async function analyze() {
     setMsg(status, 'Ajoute d’abord des photos.', 'err');
     return null;
   }
-  setMsg(status, store.aiConfigured(settings) ? 'Analyse des photos par l’IA… (jusqu’à une minute)' : 'Mode gratuit : couleur + lecture des étiquettes…', 'busy');
+  setMsg(status, 'Lecture des étiquettes et des couleurs… (jusqu’à une minute)', 'busy');
   analyzing = withBusy($('analyzeBtn'), async () => {
     try {
       const hints = {
@@ -644,7 +642,7 @@ async function analyze() {
         ...(state.touched.brand && $('brand').value.trim() ? { brand: $('brand').value.trim() } : {}),
         ...(state.touched.size && $('size').value.trim() ? { size: $('size').value.trim() } : {}),
       };
-      // Toutes les photos : l'extension choisit elle-même celles envoyées à l'IA (étiquettes d'abord).
+      // Toutes les photos : les étiquettes marquées sont lues d'abord.
       const res = await send('RV_ANALYZE', { photos: state.photos.map((p) => p.dataUrl), hints });
       if (!res?.ok) throw new Error(res?.error || 'analyse impossible');
       applyFields(res.fields);
@@ -662,11 +660,6 @@ async function analyze() {
   return analyzing;
 }
 $('analyzeBtn').addEventListener('click', analyze);
-$('nudgeSettingsBtn').addEventListener('click', () => {
-  showTab('reglages');
-  $('h-ai').closest('.card').scrollIntoView({ block: 'start' });
-  $('aiKey').focus({ preventScroll: true });
-});
 
 // ---------- Création ----------
 
@@ -693,8 +686,10 @@ async function createDraft() {
         description: $('description').value,
         price: String(price),
         autoSave: $('autoSave').checked,
-        // Sans analyse lancée (fiche saisie à la main), aucune IA n'a tourné.
-        recognition: state.recognition || { mode: 'manual', model: '', error: '', noKey: !String(settings.ai?.key || '').trim() },
+        // Sans lecture lancée (fiche saisie à la main) : rien n'a été reconnu.
+        recognition: state.recognition || { mode: 'manual', found: {}, ocr: { photos: 0, error: '' } },
+        ...(state.recognized?.categoryHints && !f.category ? { categoryHints: state.recognized.categoryHints } : {}),
+        ...(state.recognized?.brandCandidates?.length && !f.brand ? { brandCandidates: state.recognized.brandCandidates } : {}),
       };
       setMsg(status, 'Ouverture de Vinted…', 'busy');
       const res = await send('RV_RUN_MANUAL', { listing, photos: state.photos.map((p) => p.dataUrl) });
@@ -708,7 +703,6 @@ async function createDraft() {
       const hints = {
         ...f,
         description: $('autoDesc').checked ? '' : $('description').value,
-        skipAi: !!(f.title && f.category),
         labelIndexes: state.photos.map((p, i) => (p.isLabel ? i : -1)).filter((i) => i >= 0),
       };
       const { id } = await r.createJob({
@@ -740,7 +734,7 @@ $('createBtn').addEventListener('click', async () => {
 function resetForm({ keepChoices = false } = {}) {
   state.photos = [];
   state.colors = [];
-  state.aiBody = '';
+  state.recognized = null;
   state.keywords = [];
   state.recognition = null;
   state.touched = { title: false, category: false, brand: false, size: false };
@@ -822,15 +816,15 @@ function itemTitle(i) {
   return { text: 'Annonce sans titre', fallback: true };
 }
 
-/** Reconnaissance : IA + modèle, ou mode gratuit avec la raison (statuts récents uniquement). */
+/** Reconnaissance : ce qui a été lu sur les étiquettes (statuts récents uniquement). */
 function recognitionView(sum) {
-  if (sum.mode === 'ai') return { cls: 'ai', ic: 'sparkles', text: sum.aiModel ? `IA · ${sum.aiModel}` : 'IA' };
-  if (sum.mode === 'free') {
-    if (sum.noKey) return { cls: '', ic: 'info', text: 'Mode gratuit — pas de clé IA' };
-    if (sum.aiError) return { cls: 'warn', ic: 'alertTriangle', text: `Mode gratuit — IA indisponible : ${sum.aiError}` };
-    return { cls: '', ic: 'info', text: 'Mode gratuit' };
-  }
-  return null;
+  if (sum.mode !== 'auto') return null;
+  if (sum.ocrError) return { cls: 'warn', ic: 'alertTriangle', text: `Étiquettes illisibles : ${sum.ocrError}` };
+  const f = sum.found || {};
+  const parts = [f.brand === 'étiquette' && 'marque lue', f.brand === 'vinted' && 'marque vérifiée sur Vinted', f.size === 'étiquette' && 'taille lue', f.condition === 'étiquette' && 'ticket lu']
+    .filter(Boolean)
+    .join(' · ');
+  return { cls: '', ic: 'scanText', text: parts ? `Étiquette : ${parts}` : 'Étiquette : rien de lisible' };
 }
 
 /** Photos visibles / envoyées (summary.photos, sinon ligne « Photos » du remplissage). */
@@ -1169,12 +1163,6 @@ function fillSettingsForm() {
   $('ghRepo').value = settings.relay.repo;
   $('ghBranch').value = settings.relay.branch;
   $('ghToken').value = settings.relay.token;
-  $('aiEnabled').checked = settings.ai.enabled;
-  $('aiPreset').value = settings.ai.preset;
-  $('aiModel').value = settings.ai.model;
-  $('aiBaseUrl').value = settings.ai.baseUrl;
-  $('aiKey').value = settings.ai.key;
-  updateKeyLink(settings.ai.preset);
   $('wEnabled').checked = settings.worker.enabled;
   $('wAutoSave').checked = settings.worker.autoSave;
   $('wCloseTab').checked = settings.worker.closeTab;
@@ -1188,27 +1176,23 @@ function fillSettingsForm() {
   renderSettingsState();
 }
 
-/** Pastilles d'état des sections Relais et IA + encart « ajoute une clé » de la page annonce. */
+/** Pastilles d'état des sections Relais et Reconnaissance. */
 function renderSettingsState() {
   const r = settings.relay;
   $('relayState').innerHTML = store.relayConfigured(settings)
     ? `<span class="pill pill-ok">Configuré</span><span class="pill pill-plain">${esc(r.owner)}/${esc(r.repo)} · ${esc(r.branch || 'main')}</span>`
     : '<span class="pill pill-warn">À configurer</span>';
-  const provider = (AI_PRESETS[settings.ai.preset]?.label || 'IA').replace(/\s*\(.*\)$/, '');
-  $('aiState').innerHTML = !String(settings.ai.key || '').trim()
-    ? '<span class="pill pill-warn">Pas de clé · mode gratuit</span>'
-    : !settings.ai.enabled
-      ? '<span class="pill">IA désactivée · mode gratuit</span>'
-      : `<span class="pill pill-ok">IA active · ${esc(provider)}</span>`;
-  $('aiNudge').classList.toggle('hidden', store.aiConfigured(settings));
+  $('recoState').innerHTML = settings.worker.ocr !== false
+    ? '<span class="pill pill-ok">Étiquettes lues · sans IA</span>'
+    : '<span class="pill pill-warn">Lecture des étiquettes coupée</span>';
 }
 
-function updateKeyLink(preset) {
-  const url = AI_PRESETS[preset]?.keyUrl || '';
-  $('aiKeyLink').classList.toggle('hidden', !url);
-  if (url) $('aiKeyLink').href = url;
-}
-$('aiPreset').addEventListener('change', () => updateKeyLink($('aiPreset').value));
+// La lecture des étiquettes s'enregistre dès qu'on la bascule (pas de bouton dans sa carte).
+$('wOcr').addEventListener('change', async () => {
+  settings = await store.saveSettings({ worker: { ocr: $('wOcr').checked } });
+  renderSettingsState();
+  toast($('wOcr').checked ? 'Lecture des étiquettes activée.' : 'Lecture des étiquettes coupée.', { kind: 'ok' });
+});
 
 async function saveRelayForm() {
   settings = await store.saveSettings({
@@ -1246,33 +1230,6 @@ $('testRelayBtn').addEventListener('click', () =>
   }),
 );
 
-async function saveAiForm() {
-  settings = await store.saveSettings({
-    ai: { enabled: $('aiEnabled').checked, preset: $('aiPreset').value, key: $('aiKey').value.trim(), model: $('aiModel').value.trim(), baseUrl: $('aiBaseUrl').value.trim() },
-  });
-  renderSettingsState();
-}
-$('saveAiBtn').addEventListener('click', () =>
-  withBusy($('saveAiBtn'), async () => {
-    await saveAiForm();
-    flash($('aiStatus'), 'Enregistré.');
-  }),
-);
-$('testAiBtn').addEventListener('click', () =>
-  withBusy($('testAiBtn'), async () => {
-    await saveAiForm();
-    if (!settings.ai.key) return setMsg($('aiStatus'), 'Colle d’abord une clé API.', 'err');
-    setMsg($('aiStatus'), 'Test de la clé…', 'busy');
-    try {
-      const model = await testAi(settings.ai);
-      setMsg($('aiStatus'), `Clé OK — modèle ${model}.`, 'ok');
-    } catch (err) {
-      setMsg($('aiStatus'), err.message, 'err');
-    }
-    return undefined;
-  }),
-);
-
 $('saveWorkerBtn').addEventListener('click', () =>
   withBusy($('saveWorkerBtn'), async () => {
     settings = await store.saveSettings({
@@ -1290,7 +1247,7 @@ $('saveWorkerBtn').addEventListener('click', () =>
 
 function currentCode() {
   if (!store.relayConfigured(settings)) throw new Error('Configure et enregistre d’abord le relais GitHub.');
-  return encodeConnection({ relay: settings.relay, ai: settings.ai.enabled ? settings.ai : null, name: settings.profile.name });
+  return encodeConnection({ relay: settings.relay, name: settings.profile.name });
 }
 $('makeCodeBtn').addEventListener('click', () => {
   try {
@@ -1313,10 +1270,10 @@ $('importCodeBtn').addEventListener('click', () =>
   withBusy($('importCodeBtn'), async () => {
     try {
       const cfg = decodeConnection($('codeIn').value);
-      settings = await store.saveSettings({ relay: cfg.relay, ...(cfg.ai ? { ai: { ...cfg.ai, enabled: true } } : {}), ...(cfg.name ? { profile: { name: cfg.name, signature: cfg.name } } : {}) });
+      settings = await store.saveSettings({ relay: cfg.relay, ...(cfg.name ? { profile: { name: cfg.name, signature: cfg.name } } : {}) });
       fillSettingsForm();
       renderHeader();
-      setMsg($('codeStatus'), 'Code importé : relais et IA configurés pour ce profil.', 'ok');
+      setMsg($('codeStatus'), 'Code importé : relais configuré pour ce profil.', 'ok');
       await send('RV_ANNOUNCE').catch(() => null);
       renderRobotPill();
       void loadRelayAccounts();
@@ -1391,7 +1348,7 @@ async function renderLog() {
     ? rv_log
         .map((l) => {
           const m = l.message || '';
-          const level = l.level === 'info' && /brouillon enregistré/i.test(m) ? (/à compléter|IA indisponible/i.test(m) ? 'warn' : 'ok') : l.level || 'info';
+          const level = l.level === 'info' && /brouillon enregistré/i.test(m) ? (/à compléter|étiquettes impossible/i.test(m) ? 'warn' : 'ok') : l.level || 'info';
           const d = new Date(l.at);
           const valid = Number.isFinite(d.getTime()); // toISOString() lève une erreur sur une date invalide
           const when = valid ? d.toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';

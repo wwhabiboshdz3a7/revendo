@@ -193,7 +193,7 @@ export const CATEGORY_DEFS = [
 
 /**
  * Marques fréquentes, avec leur orthographe exacte : détection dans le texte
- * des étiquettes (OCR, transcription de l'IA) et correction de l'orthographe
+ * des étiquettes (OCR) et correction de l'orthographe
  * d'une marque lue (canonicalBrand). Éviter les noms de 1 ou 2 lettres.
  */
 export const BRANDS = [
@@ -245,12 +245,69 @@ export const BRANDS = [
   // Enfants et marques de distributeurs (très fréquentes sur Vinted)
   'Name It', 'Mayoral', 'Boboli', 'Obaïbi', 'Tartine et Chocolat', "Bout'Chou", 'Carrément Beau', 'Billieblush',
   'Esmara', 'Livergy', 'Crivit', 'Lupilu', 'Pepperts', 'Tissaia', 'Atmosphere', 'Denim Co', 'Monoprix',
+  // Mode femme / homme (France, Europe)
+  'Sud Express', 'Maison 123', 'Petite Mendigote', 'Le Mont Saint Michel', 'Ekyog', 'La Fée Maraboutée', 'Paul & Joe',
+  'Paule Ka', 'Antik Batik', 'Isabel Marant Étoile', 'Musier', 'Réalisation Par', 'Reformation', 'Free People',
+  'Anthropologie', 'Mint&Berry', 'NA-KD', 'Missguided', 'Nasty Gal', 'Miss Selfridge', 'Dorothy Perkins', 'Wallis',
+  'Oasis', 'Warehouse', 'Whistles', 'Reiss', 'Hobbs', 'Karen Millen', 'Phase Eight', 'Joules', 'Boden', 'White Stuff',
+  'Seasalt', 'FatFace', 'Next', 'Marks & Spencer', 'George', 'Matalan', 'Peacocks', 'Ann Taylor', 'Banana Republic',
+  'J.Crew', 'Madewell', 'Old Navy', 'Forever 21', 'Cedarwood State', 'Takko', 'KiK', "Ernsting's Family", 'Street One',
+  'Cecil', 'Gerry Weber', 'Betty Barclay', "Marc O'Polo", 'Marc Cain', 'Opus', 'Someday', 'Comma', 'Bonita', 'Mustang',
+  'Camel Active', 'Bugatti', 'Olymp', 'Eterna', 'Seidensticker', 'Pierre Cardin', 'Jacques Britt', 'Influence',
+  'U Collection', 'Japan Rags', 'Freeman T. Porter', 'Deeluxe', 'Pull-In', 'Element', 'Hurley', 'RVCA', 'Santa Cruz',
+  'Thrasher', 'Obey', 'HUF', 'Carhartt WIP', 'Kith', 'A Bathing Ape', 'Evisu', 'Edwin', 'Nudie Jeans', 'IRO',
+  'Paul & Shark', 'Harmont & Blaine', 'North Sails', 'Henri Lloyd', 'Parajumpers', 'Peuterey', 'Herno',
+  'Save the Duck', 'Colmar', 'Russell Athletic', 'Starter', 'Yeezy', 'On Running', 'Brooks', 'Karhu', 'Patrick',
+  'Spalding', 'Wilson', 'Head', 'Babolat', 'Protest', 'Picture Organic Clothing', 'Eider', 'Mammut', 'Vaude',
+  'Schöffel', 'Odlo', 'Icebreaker', 'Craft', 'Kempa', 'Erima', 'Joma', 'Macron', 'Errea', 'Alo Yoga', 'Sweaty Betty',
+  'Antony Morato', 'Hast', 'Izac', 'Galeries Lafayette', 'Blancheporte', 'La Redoute', 'Bonprix', '3 Suisses', 'Mim',
+  'Jacqueline Riu', 'Mise au Green', 'Christine Laure', 'Soeur', 'Berenice', 'Tara Jarmon', 'Paco Rabanne', 'Mulberry',
+  'Kurt Geiger', 'Elisabetta Franchi', 'Twinset', 'Patrizia Pepe', 'Weekend Max Mara', 'Marella', 'Pennyblack',
+  'Sisley', 'Stefanel', 'Motivi', 'Kocca', 'Fracomina', 'Dsquared2', 'Philipp Plein', 'Alexander Wang', 'Tom Ford',
+  'Comme des Garçons', 'Yohji Yamamoto', 'Issey Miyake', 'Vivienne Westwood', 'Jean Paul Gaultier', 'Mugler',
+  'Sonia Rykiel', 'Courrèges', 'Nina Ricci', 'Maison Margiela', 'Marni', 'Missoni', 'Etro', 'Roberto Cavalli',
+  'Just Cavalli', 'Emilio Pucci', 'Salvatore Ferragamo', 'Stella McCartney', 'Diane von Furstenberg', 'Ganni',
+  'Rotate', 'Self-Portrait', 'Zimmermann', 'Romwe', 'Cider', 'Emery Rose', 'Halara', 'Zaful', 'Muji', 'Cropp', 'House',
+  'Mohito', 'LC Waikiki', 'Defacto', 'Koton', 'Mavi', 'Terranova', 'Calliope', 'Yamamay', 'Hunkemöller',
+  "Women'Secret", 'Lascana', 'Triumph', 'Sloggi', 'Dim', 'Playtex', 'Wonderbra', 'Simone Pérèle', 'Aubade',
+  'Lise Charmel', 'Passionata', 'Chantelle', 'Livia', 'Banana Moon', 'Seafolly', 'Aéropostale', 'Only & Sons',
+  'Burton', 'Fusalp', 'Loewe',
+  'Goyard', 'Jimmy Choo', 'Christian Louboutin', 'Manolo Blahnik', 'Sergio Rossi', "Tod's", 'Hogan', 
+  'Le Petit Lunetier', 
+  // Enfants, puériculture, jouets
+  'Natalys', "Noukie's", 'Lili Gaufrette', 'Marèse', 'Baby Dior', 'Little Marc Jacobs', "Carter's", 'OshKosh',
+  'Topomini', 'Kitchoun', 'Cadet Rousselle', 'Kimbaloo', 'Chicco', 'Bébé Confort', 'Cybex', 'Babyzen', 'Stokke',
+  'Maxi-Cosi', 'Joie', 'Béaba', 'Tommee Tippee', 'Mattel', 'Barbie', 'Hasbro', 'Hot Wheels', 'Nerf', 'Pokémon',
+  'Sophie la Girafe', 'Djeco', 'Janod', 'Ravensburger', 'Moulin Roty', 'Smoby', 'Hape', 'Melissa & Doug', 'Schleich',
+  'Polly Pocket', 'LOL Surprise', 'Funko', 'Little Tikes',
+  // Chaussures
+  'Aster', 'Babybotte', 'Bopy', 'Mod8', 'Shoo Pom', "Pom d'Api", 'GBB', 'Start Rite', 'Naturino', 'Superfit',
+  'Ricosta', 'Primigi', 'Bisgaard', 'Ecco', 'Mephisto', 'Pataugas', 'Le Chameau', 'Hunter', 'Emu Australia',
+  'Minnetonka', 'Sorel', 'Moon Boot', 'Keds', 'K-Swiss', 'Autry', 'Philippe Model', 'Common Projects', 'Axel Arigato',
+  'Ash', 'Bronx', 'Jeffrey Campbell', 'Melissa', 'Ipanema', 'Teva', 'Heyraud', 'JB Martin', 'Free Lance', 'Muratti',
+  'Méduse', 'Arche', 'Clergerie', 'Carel', 'Spot On', 'Graceland', 'Pikolinos', 'Hispanitas', 'Unisa', 'Pura López',
+  'Castañer', 'Toni Pons', 'Gioseppo', 'Tamaris', 'Rieker', 'Gabor', 'Marco Tozzi', 'Ara', 'Josef Seibel', 'Chaussea',
+  'Besson', 'André', 'Bata', 'Dockers', 
+  'New Rock', 'Underground', 
+  // Sacs, bagagerie
+  'Jansport', 'Samsonite', 'Delsey', 'American Tourister', 'Rimowa', 'Lollipops', 'Hexagona', 'Arthur & Aston',
+  'Mac Douglas', 'Texier', 'Sabrina', 'Lancaster', 'Nat & Nin',
+  'Bagllerina', 'Paquetage', 
+  // Bijoux, montres, lunettes
+  'Thomas Sabo', 'Agatha', "Histoire d'Or", 'Marc Orian', 'Les Georgettes', 'Ti Sento', 'Morellato', 'Swatch',
+  'Tissot', 'Seiko', 'Citizen', 'Festina', 'Cluse', 'Komono', 'Ice-Watch', 'Rolex', 'Omega', 'Cartier', 'TAG Heuer',
+  'Longines', 'Hamilton', 'Persol', 'Polaroid', 'Carrera', 'Tiffany & Co.', 'Messika', 'Dinh Van', 'APM Monaco',
+  'Maty',
+  // Électronique, beauté
+  'PlayStation', 'Xbox', 'Microsoft', 'Huawei', 'Xiaomi', 'Bose', 'JBL', 'Beats', 'Canon', 'Nikon', 'GoPro', 'Dyson',
+  'Philips', 'Sephora', "L'Oréal", 'Yves Rocher', 'MAC', 'Benefit', 'NYX', 'Clarins', 'Lancôme', 'Nuxe', 'Caudalie',
+  'Kiko', 'Rituals', 'The Body Shop', 'Lush',
 ];
 
 /**
  * Autres écritures d'une marque (clé = écriture « slug » : minuscules sans
  * accents ni ponctuation) → nom EXACT de BRANDS. Ne servent qu'à ramener une
- * marque déjà lue (IA, saisie) à la bonne orthographe, jamais à la deviner.
+ * marque déjà lue (étiquette, saisie) à la bonne orthographe, jamais à la deviner.
  */
 export const BRAND_ALIASES = {
   levistrauss: "Levi's",
@@ -303,6 +360,43 @@ export const BRAND_ALIASES = {
   jdy: 'Jacqueline de Yong',
   nameit: 'Name It',
   newyorker: 'New Yorker',
+  nikeair: 'Nike',
+  asicstiger: 'Asics',
+  vansvault: 'Vans',
+  sebagodocksides: 'Sebago',
+  timberlandpro: 'Timberland',
+  catfootwear: 'Caterpillar',
+  fjallravenkanken: 'Fjällräven',
+  kanken: 'Fjällräven',
+  longchamplepliage: 'Longchamp',
+  herschelsupply: 'Herschel',
+  herschelsupplyco: 'Herschel',
+  monclergrenoble: 'Moncler',
+  ralphlaurensport: 'Ralph Lauren',
+  lacostesport: 'Lacoste',
+  saintlaurentparis: 'Saint Laurent',
+  hackettlondon: 'Hackett',
+  bape: 'A Bathing Ape',
+  gshock: 'Casio',
+  victoriassecretpink: "Victoria's Secret",
+  marksandspencer: 'Marks & Spencer',
+  mands: 'Marks & Spencer',
+  tiffany: 'Tiffany & Co.',
+  tiffanyandco: 'Tiffany & Co.',
+  hm: 'H&M',
+  dsquared: 'Dsquared2',
+  thierrymugler: 'Mugler',
+  maisonmartinmargiela: 'Maison Margiela',
+  mmmargiela: 'Maison Margiela',
+  dvf: 'Diane von Furstenberg',
+  lolsurprise: 'LOL Surprise',
+  onlyandsons: 'Only & Sons',
+  womensecret: "Women'Secret",
+  oshkoshbgosh: 'OshKosh',
+  bebeconfort: 'Bébé Confort',
+  playstation5: 'PlayStation',
+  ps5: 'PlayStation',
+  ps4: 'PlayStation',
 };
 
 /**
@@ -316,6 +410,115 @@ export const BRAND_AMBIGUOUS = [
   'Palace', 'Champion', 'Disney', 'Apple', 'Sony', 'Gap', 'COS', 'Jules', 'Brice', 'Morgan', 'Salsa', 'Reserved',
   'Supreme', 'Guess', 'Esprit', 'Replay', 'Weekday', 'Off-White', 'New Look', 'Tex', 'Camper', 'Buffalo', 'Lotto',
   'Millet', 'Aigle', 'Caterpillar', 'Name It', 'New Era', 'Atmosphere', 'Denim Co', 'Jott', 'Lego',
+  // Ajoutées avec la base élargie (mots courants, prénoms, lieux)
+  'Next', 'George', 'Oasis', 'Warehouse', 'House', 'Head', 'Element', 'Patrick', 'Craft', 'Ash', 'Arche', 'Bata', 'Influence', 'Someday', 'Comma', 'Opus', 'Mustang', 'Melissa', 'Hunter', 'Wilson', 'Starter', 'Brooks', 'Rotate', 'Cider', 'Soeur', 'Hast', 'Dim', 'Livia', 'Triumph', 'Joie', 'Nerf', 'Beats', 'Canon', 'Polaroid', 'Carrera', 'Agatha', 'Sabrina', 'Omega', 'Maty', 'Ara', 'Mim', 'KiK', 'HUF', 'MAC', 'Lush', 'Benefit', 'Rituals', 'Ecco', 'Bronx', 'André', 'Cecil', 'Mavi', 'Koton', 'Defacto', 'Citizen', 'Swatch', 'Hamilton', 'Obey', 'Edwin', 'Bonita', 'Protest', 'Aster', 'Spot On', 'Underground', 'Lancaster', 'Seasalt', 'Aubade', 'Hape', 'Burton',
+];
+
+/**
+ * Marques spécialisées → indices de catégorie, sans IA : mots cherchés dans
+ * le nom et le fil d'Ariane des catégories que Vinted recommande (minuscules,
+ * sans accents), terme tapé dans « Trouver une catégorie » si Vinted ne
+ * recommande rien, et rayon quand la marque n'habille que les enfants.
+ */
+export const BRAND_HINTS = [
+  {
+    words: ['chaussures', 'baskets', 'sneakers'],
+    search: 'Baskets',
+    brands: ['Converse', 'Vans', 'Veja', 'Golden Goose', 'Autry', 'Keds', 'K-Swiss', 'Axel Arigato', 'Common Projects', 'Philippe Model',
+      'Superga', 'Skechers', 'Onitsuka Tiger', 'Hoka', 'Saucony', 'Mizuno', 'On Running', 'Karhu', 'Yeezy'],
+  },
+  {
+    words: ['chaussures', 'bottes', 'bottines', 'boots'],
+    search: 'Bottes',
+    brands: ['Dr. Martens', 'UGG', 'Sorel', 'Moon Boot', 'Emu Australia', 'Le Chameau', 'Hunter', 'Palladium', 'New Rock', 'Underground'],
+  },
+  {
+    words: ['chaussures', 'sandales', 'tongs', 'claquettes', 'mules', 'espadrilles'],
+    search: 'Sandales',
+    brands: ['Birkenstock', 'Crocs', 'Havaianas', 'Teva', 'Ipanema', 'Melissa', 'Castañer', 'Toni Pons'],
+  },
+  { words: ['chaussures', 'ballerines'], search: 'Ballerines', brands: ['Repetto'] },
+  { words: ['chaussures', 'escarpins', 'talons'], search: 'Escarpins', brands: ['Jimmy Choo', 'Christian Louboutin', 'Manolo Blahnik', 'Sergio Rossi'] },
+  {
+    words: ['chaussures'],
+    search: '',
+    brands: ['Clarks', 'Geox', 'Kickers', 'Minelli', 'San Marina', 'Eram', 'Bocage', 'Jonak', 'Steve Madden', 'Mellow Yellow', 'Merrell',
+      'Paraboot', 'Sebago', 'Camper', 'Ecco', 'Mephisto', 'Pataugas', 'Heyraud', 'JB Martin', 'Free Lance', 'Muratti', 'Méduse', 'Arche',
+      'Clergerie', 'Carel', 'Spot On', 'Graceland', 'Pikolinos', 'Hispanitas', 'Unisa', 'Pura López', 'Gioseppo', 'Tamaris', 'Rieker',
+      'Gabor', 'Marco Tozzi', 'Ara', 'Josef Seibel', "Tod's", 'Hogan', 'Chaussea', 'Besson', 'André', 'Bata', 'Minnetonka',
+      'Jeffrey Campbell', 'Ash', 'Bronx', 'Buffalo'],
+  },
+  {
+    rayon: 'Enfants',
+    words: ['chaussures'],
+    search: '',
+    brands: ['Aster', 'Babybotte', 'Bopy', 'Mod8', 'Shoo Pom', "Pom d'Api", 'GBB', 'Start Rite', 'Naturino', 'Superfit', 'Ricosta', 'Primigi', 'Bisgaard'],
+  },
+  { words: ['sacs a dos', 'sacs', 'bagagerie'], search: 'Sacs à dos', brands: ['Eastpak', 'Jansport', 'Herschel', 'Fjällräven'] },
+  { words: ['valises', 'bagagerie', 'sacs'], search: 'Valises', brands: ['Samsonite', 'Delsey', 'American Tourister', 'Rimowa'] },
+  {
+    words: ['sacs', 'sac', 'pochettes', 'portefeuilles', 'maroquinerie'],
+    search: '',
+    brands: ['Longchamp', 'Lancel', 'Le Tanneur', 'Furla', 'Kipling', 'Polène', 'Lollipops', 'Hexagona', 'Arthur & Aston', 'Mac Douglas',
+      'Goyard', 'Texier', 'Sabrina', 'Lancaster', 'Nat & Nin', 'Bagllerina', 'Paquetage'],
+  },
+  {
+    words: ['bijoux', 'colliers', 'bracelets', 'bagues', 'boucles'],
+    search: 'Bijoux',
+    brands: ['Swarovski', 'Pandora', 'Thomas Sabo', 'Agatha', "Histoire d'Or", 'Marc Orian', 'Les Georgettes', 'Ti Sento', 'Morellato',
+      'Tiffany & Co.', 'Messika', 'Dinh Van', 'APM Monaco', 'Maty'],
+  },
+  {
+    words: ['montres'],
+    search: 'Montres',
+    brands: ['Casio', 'Fossil', 'Daniel Wellington', 'Swatch', 'Tissot', 'Seiko', 'Citizen', 'Festina', 'Cluse', 'Komono', 'Ice-Watch',
+      'Rolex', 'Omega', 'TAG Heuer', 'Longines', 'Hamilton'],
+  },
+  { words: ['lunettes'], search: 'Lunettes de soleil', brands: ['Ray-Ban', 'Oakley', 'Persol', 'Polaroid', 'Carrera', 'Le Petit Lunetier'] },
+  {
+    rayon: 'Enfants',
+    words: ['jouets', 'jeux'],
+    search: 'Jouets',
+    brands: ['Lego', 'Playmobil', 'Fisher-Price', 'Vtech', 'Mattel', 'Barbie', 'Hasbro', 'Hot Wheels', 'Nerf', 'Pokémon', 'Sophie la Girafe',
+      'Djeco', 'Janod', 'Ravensburger', 'Moulin Roty', 'Smoby', 'Hape', 'Melissa & Doug', 'Schleich', 'Polly Pocket', 'LOL Surprise',
+      'Funko', 'Little Tikes'],
+  },
+  {
+    rayon: 'Enfants',
+    words: ['puericulture', 'poussettes', 'sieges auto', 'repas', 'biberons'],
+    search: '',
+    brands: ['Chicco', 'Bébé Confort', 'Cybex', 'Babyzen', 'Stokke', 'Maxi-Cosi', 'Joie', 'Béaba', 'Tommee Tippee'],
+  },
+  {
+    rayon: 'Électronique',
+    words: ['electronique', 'jeux video', 'consoles', 'telephones', 'audio', 'photo', 'ordinateurs', 'tablettes'],
+    search: '',
+    brands: ['Apple', 'Samsung', 'Sony', 'Nintendo', 'PlayStation', 'Xbox', 'Microsoft', 'Huawei', 'Xiaomi', 'Bose', 'JBL', 'Beats',
+      'Canon', 'Nikon', 'GoPro', 'Dyson', 'Philips'],
+  },
+  {
+    words: ['beaute', 'maquillage', 'soins', 'parfums'],
+    search: '',
+    brands: ['Sephora', "L'Oréal", 'Yves Rocher', 'MAC', 'Benefit', 'NYX', 'Clarins', 'Lancôme', 'Nuxe', 'Caudalie', 'Kiko', 'Rituals',
+      'The Body Shop', 'Lush'],
+  },
+  {
+    words: ['lingerie', 'sous-vetements', 'soutiens-gorge', 'culottes', 'pyjamas', 'nuit'],
+    search: '',
+    brands: ['Undiz', 'Intimissimi', 'Tezenis', "Victoria's Secret", 'Princesse tam.tam', 'Hunkemöller', "Women'Secret", 'Lascana',
+      'Triumph', 'Sloggi', 'Dim', 'Playtex', 'Wonderbra', 'Simone Pérèle', 'Aubade', 'Lise Charmel', 'Passionata', 'Chantelle', 'Livia',
+      'Yamamay'],
+  },
+  { words: ['maillots de bain', 'bikini', 'plage'], search: 'Maillots de bain', brands: ['Banana Moon', 'Seafolly'] },
+  {
+    rayon: 'Enfants',
+    words: [],
+    search: '',
+    brands: ['Jacadi', 'Okaïdi', 'Obaïbi', 'Vertbaudet', 'DPAM', 'Sergent Major', 'Catimini', 'Absorba', 'Name It', 'Mayoral', 'Boboli',
+      'Tartine et Chocolat', "Bout'Chou", 'Carrément Beau', 'Billieblush', 'Lupilu', 'Pepperts', 'Bonpoint', "Tape à l'œil", 'Natalys',
+      "Noukie's", 'Lili Gaufrette', 'Marèse', 'Baby Dior', 'Little Marc Jacobs', "Carter's", 'OshKosh', 'Topomini', 'Kitchoun',
+      'Cadet Rousselle', 'Kimbaloo', 'Orchestra'],
+  },
 ];
 
 export const RAYON_TAGS = {

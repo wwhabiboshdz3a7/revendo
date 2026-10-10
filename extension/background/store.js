@@ -4,12 +4,11 @@
 
 export const DEFAULT_SETTINGS = {
   relay: { owner: 'wwhabiboshdz3a7', repo: 'revendo', branch: 'main', token: '' },
-  ai: { enabled: true, preset: 'gemini', key: '', baseUrl: '', model: '' },
   worker: {
     enabled: true, // traiter automatiquement les annonces envoyées depuis le téléphone
     autoSave: true, // cliquer « Sauvegarder le brouillon » (jamais « Ajouter »)
     closeTab: true, // fermer l'onglet quand le brouillon est enregistré
-    ocr: true, // lecture des étiquettes en mode gratuit (sans IA)
+    ocr: true, // lecture des étiquettes (marque, taille, composition) sur les photos
     defaultCondition: 'Très bon état',
   },
   profile: { name: 'Elias', signature: 'Elias', hashtags: 80 },
@@ -26,22 +25,21 @@ function deepMerge(base, extra) {
 
 export async function getSettings() {
   const { rv_settings } = await chrome.storage.local.get('rv_settings');
-  return deepMerge(DEFAULT_SETTINGS, rv_settings || {});
+  const s = deepMerge(DEFAULT_SETTINGS, rv_settings || {});
+  delete s.ai; // ancienne clé IA (versions ≤ 3.3) : plus utilisée
+  return s;
 }
 
 export async function saveSettings(patch) {
   const cur = await getSettings();
   const next = deepMerge(cur, patch);
+  delete next.ai;
   await chrome.storage.local.set({ rv_settings: next });
   return next;
 }
 
 export function relayConfigured(s) {
   return !!(s.relay?.owner && s.relay?.repo && s.relay?.token);
-}
-
-export function aiConfigured(s) {
-  return !!(s.ai?.enabled && s.ai?.key);
 }
 
 export async function getAccount() {

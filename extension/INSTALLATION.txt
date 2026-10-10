@@ -1,15 +1,18 @@
-Revendo v3.3.0 — installation de l'extension (Chrome ou Brave, Windows ou Mac)
+Revendo v3.4.0 — installation de l'extension (Chrome ou Brave, Windows ou Mac)
 
-1. Dézippe revendo-extension-v3.3.0.zip : tu obtiens le dossier « revendo-extension-v3.3.0 ».
+1. Dézippe revendo-extension-v3.4.0.zip : tu obtiens le dossier « revendo-extension-v3.4.0 ».
    Le fichier manifest.json est directement dedans.
 2. Ouvre chrome://extensions (ou brave://extensions) et active « Mode développeur ».
 3. Si une ancienne version de Revendo est installée : supprime-la (tes réglages sont à refaire
    avec le code de connexion), ou remplace ses fichiers puis clique 🔄 (réglages conservés).
-4. « Charger l'extension non empaquetée » → sélectionne le dossier « revendo-extension-v3.3.0 »
+4. « Charger l'extension non empaquetée » → sélectionne le dossier « revendo-extension-v3.4.0 »
    lui-même (celui qui contient manifest.json), puis « Sélectionner ».
 5. À refaire dans chaque profil Chrome (un profil = un compte Vinted).
-6. Réglages → IA : colle une clé Gemini gratuite (aistudio.google.com/apikey). Sans clé,
-   la marque et la catégorie sont beaucoup moins bien reconnues.
 
-Le dashboard téléphone est dans l'autre zip (revendo-web-v3.3.0.zip) : dézippe-le et glisse le
-dossier « revendo-web-v3.3.0 » sur https://app.netlify.com/drop (ou dans l'onglet Deploys de ton site).
+Aucune IA, aucune clé à fournir : la marque, la taille et la composition sont lues sur les
+étiquettes (lecteur intégré à l'extension), la catégorie est choisie parmi celles que Vinted
+propose d'après les photos. Pour une marque lue à coup sûr : photo de l'étiquette de près et
+nette, marquée « étiquette » sur le téléphone.
+
+Le dashboard téléphone est dans l'autre zip (revendo-web-v3.4.0.zip) : dézippe-le et glisse le
+dossier « revendo-web-v3.4.0 » sur https://app.netlify.com/drop (ou dans l'onglet Deploys de ton site).

@@ -3,7 +3,7 @@
  *   1. regarde toutes les 30 s s'il y a une annonce envoyée depuis le
  *      téléphone pour LE compte Vinted connecté dans ce profil Chrome ;
  *   2. la réserve (aucun autre PC ne peut la prendre) ;
- *   3. reconnaît l'article (IA ou mode gratuit) et compose l'annonce ;
+ *   3. reconnaît l'article sans IA (étiquettes, couleurs, indices) et compose l'annonce ;
  *   4. ouvre Vinted dans une fenêtre dédiée, le content script remplit et
  *      clique « Sauvegarder le brouillon » (jamais « Ajouter ») ;
  *   5. écrit le résultat pour le téléphone et supprime les photos du relais.
@@ -183,7 +183,7 @@ export async function pollOnce({ force = false } = {}) {
     if (ws.current) {
       const age = Date.now() - ws.current.startedAt;
       const alive = ws.current.tabId ? await tabExists(ws.current.tabId) : ws.current.phase === 'recognizing';
-      const limit = ws.current.tabId ? MAX_FILL_MS : 4 * 60 * 1000;
+      const limit = ws.current.tabId ? MAX_FILL_MS : 6 * 60 * 1000; // lecture des étiquettes : ~1 min, rarement plus
       if (age < limit && alive) return { skipped: 'running' };
       await failCurrent(ws.current, alive ? 'Délai dépassé pendant le remplissage.' : 'Remplissage interrompu (onglet fermé).');
     }
@@ -226,7 +226,7 @@ async function startRelayJob(relay, job, settings, account) {
     const read = await relay.readJob(job);
     data = read.data;
     const originals = read.photos.map((p) => ({ name: p.name, base64: p.base64, mime: 'image/jpeg' }));
-    // L'IA et l'OCR lisent les photos d'origine (étiquettes plus nettes) ;
+    // La lecture des étiquettes se fait sur les photos d'origine (plus nettes) ;
     // seules les versions allégées partent sur Vinted. Les deux en parallèle.
     const shrinking = shrinkAndLog(originals, `Annonce ${job.id}`);
     const hints = { ...(data.hints || {}), price: data.price };
@@ -315,7 +315,9 @@ export async function finalizeTab(tabId, result) {
       : 'Formulaire rempli (brouillon à enregistrer à la main).'
     : result?.message || 'Le brouillon n’a pas pu être enregistré.';
   const recognition = ctx.listing.recognition || {};
-  const aiError = recognition.error || '';
+  const ocrError = recognition.ocr?.error || '';
+  const found = { ...(recognition.found || {}) };
+  if (ctx.listing.brandFrom === 'vinted') found.brand = 'vinted';
   const status = {
     state: ok ? 'done' : 'error',
     message,
@@ -332,9 +334,8 @@ export async function finalizeTab(tabId, result) {
       condition: ctx.listing.condition,
       price: ctx.listing.price,
       mode: recognition.mode || '',
-      aiError,
-      aiModel: recognition.model || '',
-      noKey: !!recognition.noKey,
+      found,
+      ocrError,
       photos: { sent: ctx.photos?.length || 0, shown: shownPhotos(result, ctx.photos?.length || 0) },
       seo: ctx.listing.seo?.score ?? null,
       seoTodo: ctx.listing.seo?.todo || [],
@@ -353,8 +354,8 @@ export async function finalizeTab(tabId, result) {
   await chrome.storage.local.set({ rv_last_result: { ...status, jobId: ctx.jobId, origin: ctx.origin, at: Date.now() } });
   const ws = await store.getWorkerState();
   await store.setWorkerState({ current: null, processed: (ws.processed || 0) + (ok ? 1 : 0) });
-  const aiNote = recognition.mode !== 'ai' && aiError ? ` — IA indisponible (${aiError}), mode gratuit utilisé` : '';
-  await store.log(ok ? 'info' : 'error', `${ctx.origin === 'relay' ? `Annonce ${ctx.jobId}` : 'Annonce manuelle'} : ${message}${aiNote}`);
+  const ocrNote = ocrError ? ` — lecture des étiquettes impossible (${ocrError})` : '';
+  await store.log(ok ? 'info' : 'error', `${ctx.origin === 'relay' ? `Annonce ${ctx.jobId}` : 'Annonce manuelle'} : ${message}${ocrNote}`);
   if (ok && saved && s.worker.closeTab) {
     setTimeout(() => {
       chrome.windows.remove(ctx.windowId).catch(() => chrome.tabs.remove(tabId).catch(() => null));

@@ -95,11 +95,7 @@
               <span class="label" id="rayonLabel">Rayon</span>
               <div class="chips" id="rayonChips" role="radiogroup" aria-labelledby="rayonLabel"></div>
             </div>
-            <div id="aiNudge" class="callout callout-accent hidden">
-              <span data-icon="sparkles"></span>
-              <span><b>Reconnaissance limitée sans IA.</b> Le mode gratuit devine mal la marque et la catégorie. Une clé Gemini gratuite corrige ça en 1 minute. <button type="button" class="link" id="nudgeSettingsBtn">Ajouter une clé</button></span>
-            </div>
-            <button id="analyzeBtn" type="button" class="btn btn-secondary btn-block"><span data-icon="sparkles"></span>Reconnaître l'article depuis les photos</button>
+            <button id="analyzeBtn" type="button" class="btn btn-secondary btn-block"><span data-icon="scanText"></span>Lire les étiquettes des photos</button>
             <p class="msg" id="analyzeStatus"></p>
           </section>
 
@@ -276,7 +272,7 @@
         <ol class="steps">
           <li><span class="step">1</span><span>Crée un profil Chrome (menu profil en haut à droite → « Ajouter »).</span></li>
           <li><span class="step">2</span><span>Installe l'extension Revendo dans ce profil et connecte-toi à Vinted avec le bon compte.</span></li>
-          <li><span class="step">3</span><span>Colle le code de connexion (Réglages → Connexion) : relais et IA sont configurés d'un coup.</span></li>
+          <li><span class="step">3</span><span>Colle le code de connexion (Réglages → Connexion) : le relais est configuré d'un coup.</span></li>
           <li><span class="step">4</span><span>Laisse la fenêtre ouverte : ce profil traitera les annonces de son compte.</span></li>
         </ol>
       </section>
@@ -319,36 +315,28 @@
         </div>
       </section>
 
-      <!-- IA -->
-      <section class="card settings" aria-labelledby="h-ai">
+      <!-- Reconnaissance -->
+      <section class="card settings" aria-labelledby="h-reco">
         <div class="settings-intro">
-          <span class="card-icon"><span data-icon="sparkles"></span></span>
-          <h2 id="h-ai">Reconnaissance par IA</h2>
-          <p>Catégorie, marque, taille, couleur, matière : il ne reste que le prix à donner.</p>
-          <p class="settings-state" id="aiState"></p>
+          <span class="card-icon"><span data-icon="scanText"></span></span>
+          <h2 id="h-reco">Reconnaissance</h2>
+          <p>Sans IA, sans clé, rien à payer : tout se passe sur ce PC et sur Vinted.</p>
+          <p class="settings-state" id="recoState"></p>
         </div>
         <div class="settings-body">
-          <div class="callout callout-accent">
-            <span data-icon="sparkles"></span>
-            <span><b>Recommandé : une clé Gemini gratuite.</b> Sans IA, le mode gratuit (couleur + lecture des étiquettes) reconnaît mal la marque et la catégorie. Avec Gemini, l'étiquette est lue et l'article identifié. Clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</span>
-          </div>
+          <ul class="facts">
+            <li><span data-icon="tag" data-size="16"></span><span><b>Marque, taille, composition</b> : lues sur les étiquettes (recadrées, agrandies, remises à l'endroit). Une marque inconnue est vérifiée dans le catalogue de marques de Vinted.</span></li>
+            <li><span data-icon="layers" data-size="16"></span><span><b>Catégorie complète</b> : parmi celles que Vinted propose d'après les photos, classées avec le rayon et les indices de l'étiquette (âge, taille W32, marque de chaussures…).</span></li>
+            <li><span data-icon="palette" data-size="16"></span><span><b>Couleurs</b> : votées sur plusieurs photos de l'article. <b>État</b> : « Neuf avec étiquette » si un ticket de prix est lu, sinon l'état par défaut.</span></li>
+          </ul>
           <label class="switch-row">
-            <span class="switch-text"><b>Utiliser l'IA</b><small>Sinon : mode gratuit (couleur, OCR des étiquettes, catégorie recommandée par Vinted)</small></span>
-            <input type="checkbox" id="aiEnabled" class="switch" />
+            <span class="switch-text"><b>Lire les étiquettes</b><small>Marque, taille et composition lues sur les photos (environ 30 s par annonce)</small></span>
+            <input type="checkbox" id="wOcr" class="switch" />
           </label>
-          <div class="grid-3 grid-ai">
-            <div class="field"><label class="label" for="aiPreset">Fournisseur</label><select id="aiPreset" class="input"></select></div>
-            <div class="field"><label class="label" for="aiModel">Modèle <span class="muted">· optionnel</span></label><input type="text" id="aiModel" class="input" placeholder="par défaut" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><label class="label" for="aiBaseUrl">Adresse API <span class="muted">· « Autre »</span></label><input type="text" id="aiBaseUrl" class="input" placeholder="https://…/v1" autocomplete="off" spellcheck="false" /></div>
+          <div class="callout callout-neutral">
+            <span data-icon="info"></span>
+            <span>Pour une marque lue à coup sûr : une photo de l'étiquette <b>de près et nette</b>, marquée « étiquette » sur le téléphone.</span>
           </div>
-          <div class="field"><label class="label" for="aiKey">Clé API</label><input type="password" id="aiKey" class="input mono" placeholder="Colle ta clé ici" autocomplete="off" spellcheck="false" /></div>
-          <div class="form-actions">
-            <a id="aiKeyLink" class="btn btn-ghost" target="_blank" rel="noopener"><span data-icon="external"></span>Obtenir une clé</a>
-            <span class="spacer"></span>
-            <button id="testAiBtn" type="button" class="btn btn-secondary"><span data-icon="checkCircle"></span>Tester la clé</button>
-            <button id="saveAiBtn" type="button" class="btn btn-primary">Enregistrer</button>
-          </div>
-          <p class="msg" id="aiStatus"></p>
         </div>
       </section>
 
@@ -373,10 +361,6 @@
               <span class="switch-text"><b>Fermer la fenêtre Vinted</b><small>Une fois le brouillon enregistré</small></span>
               <input type="checkbox" id="wCloseTab" class="switch" />
             </label>
-            <label class="switch-row">
-              <span class="switch-text"><b>Lire les étiquettes (OCR)</b><small>Mode gratuit : marque et taille lues sur les photos</small></span>
-              <input type="checkbox" id="wOcr" class="switch" />
-            </label>
           </div>
           <div class="grid-3">
             <div class="field"><label class="label" for="wCondition">État par défaut</label><select id="wCondition" class="input"></select></div>
@@ -397,10 +381,10 @@
         <div class="settings-intro">
           <span class="card-icon"><span data-icon="smartphone"></span></span>
           <h2 id="h-connect">Connexion des autres profils et du téléphone</h2>
-          <p>Un seul code configure le relais et l'IA partout.</p>
+          <p>Un seul code configure le relais partout.</p>
           <div class="callout callout-warn callout-sm">
             <span data-icon="lock" data-size="16"></span>
-            <span>Le code contient le token GitHub (et la clé IA) : traite-le comme un mot de passe.</span>
+            <span>Le code contient le token GitHub : traite-le comme un mot de passe.</span>
           </div>
         </div>
         <div class="settings-body">

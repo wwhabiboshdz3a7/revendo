@@ -3,7 +3,8 @@
 Revendo prépare des **brouillons d'annonces Vinted** à partir du téléphone :
 tu prends les photos, tu tapes le prix, tu choisis le compte… et le PC crée
 le brouillon tout seul (catégorie, marque, taille, couleurs, état, titre,
-description). Il ne publie **jamais** à ta place : tu relis et publies
+description). **Sans IA** : aucune clé, aucun abonnement, rien n'est envoyé à
+un service d'IA. Il ne publie **jamais** à ta place : tu relis et publies
 toi-même depuis « Mes brouillons ».
 
 Ce dépôt contient à la fois le **code** (extension Chrome + dashboard
@@ -13,16 +14,16 @@ téléphone) et la **base de données** qui les relie.
 
 | Quoi | Où ça va | Fichier |
 | --- | --- | --- |
-| Extension (le « robot » du PC) | Chrome / Brave, dans chaque profil | [`dist/revendo-extension-v3.3.0.zip`](dist/revendo-extension-v3.3.0.zip) |
-| Dashboard téléphone | Netlify | [`dist/revendo-web-v3.3.0.zip`](dist/revendo-web-v3.3.0.zip) |
+| Extension (le « robot » du PC) | Chrome / Brave, dans chaque profil | [`dist/revendo-extension-v3.4.0.zip`](dist/revendo-extension-v3.4.0.zip) |
+| Dashboard téléphone | Netlify | [`dist/revendo-web-v3.4.0.zip`](dist/revendo-web-v3.4.0.zip) |
 
 Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`web/`](web).
 
 ### Installer l'extension
 
-1. Dézippe `revendo-extension-v3.3.0.zip`.
+1. Dézippe `revendo-extension-v3.4.0.zip`.
 2. Ouvre `chrome://extensions` (ou `brave://extensions`) et active **Mode développeur**.
-3. **Charger l'extension non empaquetée** → choisis le dossier `revendo-extension-v3.3.0`
+3. **Charger l'extension non empaquetée** → choisis le dossier `revendo-extension-v3.4.0`
    (celui qui contient `manifest.json`).
    Pour mettre à jour une ancienne version : remplace ses fichiers puis clique 🔄
    sur la carte de l'extension (les réglages sont gardés).
@@ -30,15 +31,15 @@ Les mêmes fichiers sont aussi dans les dossiers [`extension/`](extension) et [`
 5. Dans le dashboard de l'extension → **Réglages** :
    - relais GitHub : `wwhabiboshdz3a7` / `revendo` / `main` + un token GitHub
      « fine-grained » limité à ce dépôt avec **Contents : Read and write** ;
-   - **IA** : colle une clé Gemini gratuite ([aistudio.google.com/apikey](https://aistudio.google.com/apikey)).
-     Sans clé, le mode gratuit (couleur + lecture des étiquettes) reconnaît
-     beaucoup moins bien la marque et la catégorie ;
    - **Générer le code de connexion** et colle-le dans les autres profils.
+
+   Rien d'autre à configurer : la lecture des étiquettes est intégrée à
+   l'extension (elle marche même hors ligne).
 
 ### Mettre le dashboard téléphone sur Netlify
 
-- **Le plus simple** : dézippe `revendo-web-v3.3.0.zip` et glisse le dossier
-  `revendo-web-v3.3.0` sur [app.netlify.com/drop](https://app.netlify.com/drop)
+- **Le plus simple** : dézippe `revendo-web-v3.4.0.zip` et glisse le dossier
+  `revendo-web-v3.4.0` sur [app.netlify.com/drop](https://app.netlify.com/drop)
   (ou dans l'onglet *Deploys* du site existant pour le mettre à jour).
 - **Ou relié à GitHub** : *Add new site → Import from Git* → ce dépôt, branche
   qui contient le code. `netlify.toml` publie le dossier `web/` et ne
@@ -57,7 +58,7 @@ comme une app.
  photos compressées  ──blobs──▶   jobs/<compte>/<id>/01.jpg …                 toutes les 30 s : y a-t-il un job pour
  dès qu'on les choisit            jobs/<compte>/<id>/job.json  ◀──lit──────   MON compte Vinted ?
  « Envoyer » = 1 commit ───────▶                                              réserve le job (status … processing)
-                                  status/<id>.json  ◀──────────écrit───────   reconnaît l'article (IA ou OCR)
+                                  status/<id>.json  ◀──────────écrit───────   lit les étiquettes (sans IA)
  suivi en direct  ◀───lit──────   accounts/<login>.json ◀── « en ligne » ──   ouvre vinted.fr/items/new, remplit,
                                                                               « Sauvegarder le brouillon »
                                                                               écrit le résultat, supprime les photos
@@ -67,32 +68,56 @@ comme une app.
   atomique (blobs → arbre → commit → mise à jour de la branche). Si deux
   appareils écrivent en même temps, GitHub refuse le second et on recommence :
   un job n'est jamais pris par deux PC.
-- **Reconnaissance** (`shared/ai.js`, `background/recognize.js`) : l'IA lit
-  d'abord les étiquettes (texte transcrit), puis remplit la fiche avec les
-  valeurs exactes de Vinted. Si la marque ou la taille manque, une seconde
-  passe envoie seulement les photos d'étiquette en haute définition. Le mode
-  gratuit (OCR Tesseract + couleur dominante) complète ce que l'IA n'a pas
-  trouvé.
+- **Reconnaissance sans IA** (`background/recognize.js`, `offscreen/label-ocr.js`) :
+  - **étiquettes** : chaque photo est lue par Tesseract (embarqué, packs de
+    langue fra + eng dans l'extension). Les zones de texte (étiquette posée
+    sur la maille, texte blanc sur marine, à l'envers, de travers) sont
+    repérées, recadrées, agrandies, remises droites et relues de près →
+    marque (754 marques connues, tolérance aux erreurs de lecture), taille,
+    composition, rayon (« WOMEN », « 10 ans »), ticket de prix (→ « Neuf avec
+    étiquette »). Arrêt dès que marque et taille sont lues ;
+  - **marque inconnue** : le texte le plus gros de l'étiquette est cherché
+    dans le catalogue de marques de Vinted et n'est retenu que s'il y existe
+    exactement (jamais de marque inventée) ;
+  - **catégorie complète** : Vinted propose des catégories d'après les
+    photos ; Revendo choisit la bonne avec le rayon et les indices (taille
+    W32 → jean, Converse → baskets, Longchamp → sacs, marques enfants…), et
+    cherche lui-même la catégorie si Vinted n'en propose aucune ;
+  - **couleurs** : votées sur plusieurs photos de l'article (un pull marine
+    dans l'ombre reste marine).
 - **Remplissage** (`content/vinted-fill.js`) : photos → titre → description
   → prix → catégorie → marque → taille → état → couleurs → matières → colis,
   puis « Sauvegarder le brouillon ». Le bouton « Ajouter » (publier) n'est
   jamais cliqué, et le compte connecté est revérifié avant d'enregistrer.
 
+## Nouveautés de la v3.4.0
+
+- **Plus d'IA** : Gemini et OpenAI sont retirés, avec la clé et les réglages
+  qui allaient avec. Tout se fait sur le PC (lecture des étiquettes) et sur
+  Vinted (catégories proposées, catalogue de marques).
+- **Lecture des étiquettes bien plus forte** : zones de texte repérées puis
+  relues de près (recadrées, agrandies, redressées, même à l'envers ou en
+  blanc sur fond sombre). Sur les vraies photos du job elias..djb (étiquette
+  floue et à l'envers), la marque n'était pas lue ; elle l'est maintenant.
+- **754 marques** (+416) et des indices de catégorie par marque.
+- **Catégorie** : recommandations Vinted attendues (elles arrivent parfois
+  après l'ouverture du menu) et classées avec le rayon et les indices ;
+  recherche automatique si Vinted ne propose rien.
+- **Marque** vérifiée dans le catalogue Vinted quand l'étiquette porte une
+  marque inconnue ; correction d'un clic qui ne choisissait rien quand la
+  recherche ne renvoyait qu'une seule marque.
+- **Couleurs** votées sur 3 photos ; **état** « Neuf avec étiquette » si un
+  ticket de prix ou un code-barres est lu.
+- **Téléphone** : une photo marquée « étiquette » part en haute définition
+  (2048 px) pour que le PC lise la marque et la taille.
+
 ## Nouveautés de la v3.3.0
 
-- **Envoi depuis le téléphone bien plus rapide** : Safari encodait les photos
-  à ~95 % (~900 Ko chacune). Elles sont maintenant visées à ~300 Ko et
-  partent **en arrière-plan dès qu'on les choisit** ; « Envoyer » ne fait plus
+- **Envoi depuis le téléphone bien plus rapide** : photos visées à ~300 Ko,
+  envoyées en arrière-plan dès qu'on les choisit ; « Envoyer » ne fait plus
   qu'un commit.
-- **Photos fiables sur Vinted** : on attend vraiment la fin des envois
-  (avant : 20 s fixes, d'où « Photos 0/7 » ; sans photos, Vinted ne propose
-  aucune catégorie et tout le reste échouait). Repli photo par photo si la
-  zone refuse les lots, sans doublon.
-- **Lecture des étiquettes réparée** : l'OCR du mode gratuit ne démarrait
-  jamais (bloqué par la sécurité des extensions Chrome).
-- **IA plus juste** : lecture d'étiquette d'abord, règles de catégorie, marque
-  ramenée à l'orthographe Vinted (+119 marques), seconde passe HD, raison
-  affichée quand l'IA n'a pas pu être utilisée (quota, clé…).
+- **Photos fiables sur Vinted** : on attend vraiment la fin des envois ;
+  repli photo par photo si la zone refuse les lots, sans doublon.
 - **Nouveau design** du dashboard téléphone et du dashboard PC (clair/sombre).
 
 ## Arborescence
@@ -102,7 +127,8 @@ extension/          extension Chrome (Manifest V3) — à charger « non empaque
   background/       service worker : robot, reconnaissance, clics « réels » (CDP)
   content/          remplissage du formulaire Vinted
   dashboard/        dashboard plein écran de l'extension
-  offscreen/        OCR Tesseract (lecture des étiquettes)
+  offscreen/        lecture des étiquettes (Tesseract + repérage des zones de texte)
+  lib/tesseract/    moteur OCR et packs de langue fra + eng (embarqués)
   shared/           code commun extension + téléphone (SOURCE DE VÉRITÉ)
 web/                dashboard téléphone (site statique Netlify) ; web/shared = copie
 tools/              tests, synchro de shared/, fabrication des zips

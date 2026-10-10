@@ -1,144 +1,33 @@
 /**
- * Revendo — tests de la reconnaissance de l'article (IA + mode gratuit) :
- * lecture de la réponse, marques (orthographe, détection tolérante à l'OCR),
- * tailles, fusion des sources, et appels IA avec un fetch simulé (mode JSON,
- * replis, seconde passe « étiquette »). Sans réseau ni navigateur.
- * Lancement : node --test tools/test/*.test.mjs
+ * Revendo — tests de la reconnaissance SANS IA : marques (orthographe,
+ * détection tolérante à l'OCR, base élargie), tailles, indices lus sur les
+ * étiquettes (rayon, jean, ticket), indices de catégorie par marque,
+ * candidats « marque » à vérifier sur Vinted, fusion, couleurs (vote), et la
+ * chaîne complète analyzePhotos avec une lecture d'étiquettes simulée.
+ * Sans réseau ni navigateur. Lancement : node --test tools/test/*.test.mjs
  */
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 
+import { analyzePhotos, jpegDims, ocrPhoto, readLabels } from '../../extension/background/recognize.js';
+import { nearestVintedColor, pickListingColors, voteColors } from '../../extension/shared/colors.js';
+import { decodeConnection, encodeConnection } from '../../extension/shared/config.js';
+import { utf8ToBase64 } from '../../extension/shared/relay.js';
 import {
-  AI_PRESETS,
-  buildPrompt,
-  chatWithFallback,
-  mergeLabelPass,
-  normalizeAiResult,
-  normalizeCategory,
-  parseJsonLoose,
-  pickPhotosForAi,
-  recognizeItem,
-} from '../../extension/shared/ai.js';
-import { nearestVintedColor, pickListingColors } from '../../extension/shared/colors.js';
-import {
+  brandCandidates,
+  brandHints,
+  buildDescription,
   canonicalBrand,
+  categoryHints,
   detectBrand,
   detectBrandFuzzy,
   detectSize,
   detectSizeStrict,
+  labelClues,
   mergeFields,
   normalizeSize,
 } from '../../extension/shared/listing.js';
-import { BRANDS, BRAND_ALIASES, BRAND_AMBIGUOUS } from '../../extension/shared/vinted-data.js';
-import { jpegDims, ocrImages } from '../../extension/background/recognize.js';
-
-// ---------------------------------------------------------------------------
-// Faux fournisseur IA
-// ---------------------------------------------------------------------------
-
-/** fetch simulé : `replies` = liste de réponses (objet JSON du modèle, { status, error } ou fonction). */
-function fakeFetch(replies) {
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    const body = JSON.parse(init.body);
-    const content = body.messages[0].content;
-    const parts = Array.isArray(content) ? content : [{ type: 'text', text: content }];
-    calls.push({
-      url,
-      body,
-      model: body.model,
-      json: !!body.response_format,
-      prompt: parts.find((p) => p.type === 'text')?.text || '',
-      images: parts.filter((p) => p.type === 'image_url').map((p) => p.image_url.url),
-    });
-    let r = replies[Math.min(calls.length - 1, replies.length - 1)];
-    if (typeof r === 'function') r = await r(init, body);
-    if (r && r.status) {
-      const err = Array.isArray(r.error) ? r.error : { error: { message: r.error || 'erreur' } };
-      return new Response(JSON.stringify(err), { status: r.status });
-    }
-    return new Response(JSON.stringify({ choices: [{ message: { content: typeof r === 'string' ? r : JSON.stringify(r) } }] }), { status: 200 });
-  };
-  return { fetchImpl, calls };
-}
-
-const GEMINI = { preset: 'gemini', key: 'cle-test' };
-const img = (n) => `data:image/jpeg;base64,IMG${n}`;
-
-// ---------------------------------------------------------------------------
-// Réponse de l'IA
-// ---------------------------------------------------------------------------
-
-test('parseJsonLoose : blocs ```json, texte parasite, tableau, accolades dans les chaînes', () => {
-  assert.deepEqual(parseJsonLoose('```json\n{"a":1}\n```'), { a: 1 });
-  assert.deepEqual(parseJsonLoose('Voici la fiche : {"title":"Pull {rare}","n":2} merci'), { title: 'Pull {rare}', n: 2 });
-  assert.deepEqual(parseJsonLoose('[{"brand":"Gant"}]'), { brand: 'Gant' });
-  assert.deepEqual(parseJsonLoose('{"t":"guillemet \\" et }"}'), { t: 'guillemet " et }' });
-  assert.equal(parseJsonLoose('pas de json'), null);
-  assert.equal(parseJsonLoose(''), null);
-  assert.equal(parseJsonLoose('{"a": }'), null);
-});
-
-test('normalizeAiResult : champs étiquette conservés, marque à la bonne orthographe', () => {
-  const r = normalizeAiResult({
-    label_text: 'TOMMY HILFIGER\nM | MADE IN CHINA',
-    label_photos: [1, '3', 1, -2, 'x'],
-    brand: 'TOMMY HILFIGER',
-    brand_evidence: 'etiquette',
-    size: 'm',
-    rayon: 'femmes',
-    category: 'Pull',
-    colors: ['bleu marine', 'blanc', 'rouge'],
-    materials: [],
-    condition: 'très bon état',
-    package: 'moyen',
-    confidence: 1.4,
-  });
-  assert.equal(r.labelText, 'TOMMY HILFIGER | M | MADE IN CHINA');
-  assert.deepEqual(r.labelPhotos, [1, 3]);
-  assert.equal(r.brand, 'Tommy Hilfiger');
-  assert.equal(r.brandEvidence, 'étiquette');
-  assert.equal(r.size, 'M');
-  assert.equal(r.rayon, 'Femmes');
-  assert.equal(r.category, 'Pulls');
-  assert.deepEqual(r.colors, ['Marine', 'Blanc']);
-  assert.equal(r.condition, 'Très bon état');
-  assert.equal(r.package, 'Moyen');
-  assert.equal(r.confidence, 1);
-});
-
-test('normalizeAiResult : marque, taille et matières complétées depuis label_text', () => {
-  const r = normalizeAiResult({
-    label_text: 'GANT | L | 80% COTON 20% POLYESTER | MADE IN PORTUGAL',
-    brand: 'inconnue',
-    size: '',
-    materials: [],
-  });
-  assert.equal(r.brand, 'Gant');
-  assert.equal(r.brandEvidence, 'étiquette');
-  assert.equal(r.size, 'L');
-  assert.deepEqual(r.materials, ['Coton', 'Polyester']);
-  // Rien de lisible : rien d'inventé.
-  const empty = normalizeAiResult({ label_text: 'MADE IN U.S.A. | DRY CLEAN ONLY', brand: '', size: '' });
-  assert.equal(empty.brand, '');
-  assert.equal(empty.brandEvidence, '');
-  assert.equal(empty.size, '');
-  assert.equal(normalizeAiResult(null), null);
-  assert.equal(normalizeAiResult([1, 2]), null);
-});
-
-test('normalizeAiResult : tailles et catégories ramenées au format Vinted', () => {
-  assert.equal(normalizeAiResult({ size: '10Y' }).size, '10 ans');
-  assert.equal(normalizeAiResult({ size: 'W32 L34' }).size, 'W32');
-  assert.equal(normalizeAiResult({ size: 'EU 38.5' }).size, '38,5');
-  assert.equal(normalizeAiResult({ size: 'unknown' }).size, '');
-  assert.equal(normalizeSize('One size'), 'Taille unique');
-  assert.equal(normalizeSize('Medium'), 'M');
-  assert.equal(normalizeCategory('hoodie'), 'Sweats');
-  assert.equal(normalizeCategory('T-shirt'), 'T-shirts');
-  assert.equal(normalizeCategory('Pulls à col roulé'), 'Pulls à col roulé');
-  assert.equal(normalizeCategory('Chaussons'), 'Chaussons');
-});
+import { BRAND_ALIASES, BRAND_AMBIGUOUS, BRAND_HINTS, BRANDS } from '../../extension/shared/vinted-data.js';
 
 // ---------------------------------------------------------------------------
 // Marques
@@ -155,7 +44,25 @@ test('données marques : alias et marques ambiguës pointent vers BRANDS, sans d
   for (const b of ['Gant', 'Tommy Jeans', 'Calvin Klein Jeans', 'Eden Park', 'Serge Blanco', 'Façonnable', 'Hackett', 'American Vintage', 'Father & Sons', 'Devred', 'Armand Thiery', 'Damart', 'Bréal', 'Tex', 'In Extenso', 'Hoka', 'Saucony', 'Mizuno', 'Merrell', 'Palladium', 'Caterpillar', 'New Era', "Arc'teryx"]) {
     assert.ok(BRANDS.includes(b), `marque manquante ${b}`);
   }
-  assert.ok(BRANDS.length >= 290);
+  assert.ok(BRANDS.length >= 700, `base de marques : ${BRANDS.length}`);
+  for (const group of BRAND_HINTS) for (const b of group.brands) assert.ok(BRANDS.includes(b), `indice de catégorie ${b}`);
+  // Sous-lignes ramenées à la marque mère, jamais une marque à part.
+  for (const sub of ['Nike Air', 'Asics Tiger', 'Longchamp Le Pliage']) assert.ok(!BRANDS.includes(sub), sub);
+  assert.equal(canonicalBrand('NIKE AIR'), 'Nike');
+  assert.equal(canonicalBrand('herschel supply co'), 'Herschel');
+});
+
+test('base élargie : marques fréquentes sur Vinted détectées, mots courants seulement seuls sur une ligne', () => {
+  assert.equal(detectBrand('SÉZANE\nMADE IN PORTUGAL'), 'Sézane');
+  assert.equal(detectBrand("MARC O'POLO | 100% COTTON"), "Marc O'Polo");
+  assert.equal(detectBrand('Massimo Dutti'), 'Massimo Dutti');
+  assert.equal(detectBrand('JACQUELINE DE YONG'), 'Jacqueline de Yong');
+  assert.equal(detectBrand('next day delivery'), null);
+  assert.equal(detectBrand('NEXT\n12'), 'Next');
+  assert.equal(detectBrand('Kinder 104'), null); // « enfants » en allemand
+  assert.equal(detectBrand('ripstop element'), null);
+  assert.equal(detectBrandFuzzy('PARAJUMPERS'), 'Parajumpers');
+  assert.equal(detectBrandFuzzy('BIRKENST0CK'), 'Birkenstock');
 });
 
 test('canonicalBrand : orthographe de BRANDS, alias, mots décoratifs, casse propre', () => {
@@ -214,6 +121,9 @@ test('detectBrandFuzzy : erreurs d’OCR reconnues', () => {
     ['NAPAPIJRl', 'Napapijri'],
     ['the n0rth face', 'The North Face'],
     ['SUPERDRV', 'Superdry'],
+    // Bruit collé au mot par l'OCR (étiquette tissée floue, drapeau lu comme une lettre).
+    ['TOMMYn', 'Tommy Hilfiger'],
+    ['TOMMYyA - M', 'Tommy Hilfiger'],
   ];
   for (const [text, want] of ok) assert.equal(detectBrandFuzzy(text), want, text);
 });
@@ -267,7 +177,7 @@ test('detectSizeStrict : lettre seule seulement après « taille/size… » ou s
   assert.equal(detectSize('Jean W30 L32'), 'W30');
 });
 
-test('mode gratuit : texte d’OCR réel (photo 2 du job lauraaix) → Tommy Hilfiger, M', () => {
+test('texte d’OCR réel (photo 2 du job lauraaix) → Tommy Hilfiger, M', () => {
   // Lecture Tesseract filtrée par confiance (offscreen.js) : HILFIGER illisible, TOMMY et M nets.
   const ocr = '17,\n=\n1%\nté\nad\n7\n»\n«\nNN\n$\nA\n7\nTOMMY\nM\nMADE\nCHINA\nvale';
   assert.equal(detectBrand(ocr) || detectBrandFuzzy(ocr), 'Tommy Hilfiger');
@@ -279,198 +189,197 @@ test('mode gratuit : texte d’OCR réel (photo 2 du job lauraaix) → Tommy Hil
 });
 
 // ---------------------------------------------------------------------------
-// Fusion
+// Indices lus sur les étiquettes
 // ---------------------------------------------------------------------------
 
-test('mergeFields : saisie > IA > local, marque à la bonne orthographe, champs attendus', () => {
-  const ai = normalizeAiResult({ brand: '', size: 'M', category: 'Pulls', rayon: 'Femmes', colors: ['marine'], title: 'Pull à pois marine', description: 'Joli pull.', defects: '' });
-  const local = { brand: 'TOMMY HILFIGER', size: 'L', colors: ['Noir'], materials: ['Coton'] };
-  const f = mergeFields({ hints: { price: '18', rayon: 'Femmes' }, ai, local, defaults: { condition: 'Bon état' } });
-  for (const k of ['rayon', 'category', 'categoryPath', 'brand', 'size', 'colors', 'materials', 'condition', 'package', 'title', 'aiBody', 'notes', 'keywords', 'price']) assert.ok(k in f, k);
+test('labelClues : rayon, jean, ticket de prix / code-barres', () => {
+  assert.equal(labelClues('XL TG/XG MADE IN CHINA').rayon, '');
+  assert.equal(labelClues('WOMEN | 38').rayon, 'Femmes');
+  assert.equal(labelClues("MEN'S | L").rayon, 'Hommes');
+  assert.equal(labelClues('10 ANS 140 CM').rayon, 'Enfants');
+  assert.equal(labelClues('18 mois').rayon, 'Enfants');
+  assert.equal(labelClues('KIDS').rayon, 'Enfants');
+  assert.equal(labelClues('women and men').rayon, '');
+  assert.deepEqual(labelClues('W32 L34').words, ['jeans', 'jean']);
+  assert.equal(labelClues('W32 L34').search, 'Jeans');
+  assert.equal(labelClues('PRIX 29,99 €').newWithTag, true);
+  assert.equal(labelClues('EUR 35.00').newWithTag, true);
+  assert.equal(labelClues('3608077012345').newWithTag, true);
+  // Mètre ruban, températures de lavage, RN : pas un ticket.
+  assert.equal(labelClues('40 41 42 43 44 45 46 47 48 49 50').newWithTag, false);
+  assert.equal(labelClues('30° RN 77806 CA 00474').newWithTag, false);
+});
+
+test('categoryHints : rayon saisi > étiquette > marque ; mots et terme de recherche', () => {
+  assert.deepEqual(categoryHints({ brand: 'Converse' }), { rayon: '', words: ['chaussures', 'baskets', 'sneakers'], search: 'Baskets' });
+  assert.equal(categoryHints({ brand: 'Jacadi' }).rayon, 'Enfants');
+  assert.equal(categoryHints({ brand: 'Jacadi', rayon: 'Femmes' }).rayon, 'Femmes');
+  assert.equal(categoryHints({ text: 'WOMEN', brand: 'Lego' }).rayon, 'Femmes');
+  assert.equal(categoryHints({ brand: 'Longchamp' }).words[0], 'sacs');
+  assert.equal(categoryHints({ text: 'W30 L32', brand: "Levi's" }).search, 'Jeans');
+  assert.deepEqual(categoryHints({ brand: 'Tommy Hilfiger' }), { rayon: '', words: [], search: '' });
+  assert.equal(brandHints('ugg')?.search, 'Bottes');
+  assert.equal(brandHints(''), null);
+});
+
+test('brandCandidates : texte le plus gros et net, sans mots d’étiquette ni tailles', () => {
+  const lines = [
+    { text: 'MADE IN', h: 12, conf: 91 },
+    { text: 'CHINA', h: 12, conf: 95 },
+    { text: 'SÉZANE', h: 30, conf: 90 },
+    { text: '100% COTTON', h: 10, conf: 90 },
+    { text: 'XL', h: 20, conf: 95 },
+    { text: 'MAISON KITSUNÉ', h: 22, conf: 88 },
+    { text: 'Wash at 30', h: 9, conf: 92 },
+    { text: 'BLURRY', h: 40, conf: 50 },
+    { text: 'RN 77806', h: 10, conf: 95 },
+  ];
+  assert.deepEqual(brandCandidates(lines), ['Sézane', 'Maison Kitsuné']);
+  assert.deepEqual(brandCandidates([]), []);
+  assert.deepEqual(brandCandidates([{ text: 'MADE IN CHINA', h: 30, conf: 99 }]), []);
+});
+
+test('normalizeSize : format Vinted', () => {
+  assert.equal(normalizeSize('xl'), 'XL');
+  assert.equal(normalizeSize('10Y'), '10 ans');
+  assert.equal(normalizeSize('W32 L34'), 'W32');
+  assert.equal(normalizeSize('EU 38,5'), '38,5');
+  assert.equal(normalizeSize('one size'), 'Taille unique');
+  assert.equal(normalizeSize(''), '');
+});
+
+// ---------------------------------------------------------------------------
+// Fusion et description
+// ---------------------------------------------------------------------------
+
+test('mergeFields : saisie > étiquette > défauts, marque à la bonne orthographe', () => {
+  const local = { brand: 'TOMMY HILFIGER', size: 'm', colors: ['Marine'], materials: ['Coton'], rayon: 'Femmes', condition: 'Neuf avec étiquette' };
+  const f = mergeFields({ hints: { price: '18' }, local, defaults: { condition: 'Bon état' } });
+  for (const k of ['rayon', 'category', 'categoryPath', 'brand', 'size', 'colors', 'materials', 'condition', 'package', 'title', 'notes', 'keywords', 'price']) assert.ok(k in f, k);
   assert.equal(f.brand, 'Tommy Hilfiger');
   assert.equal(f.size, 'M');
   assert.deepEqual(f.colors, ['Marine']);
   assert.deepEqual(f.materials, ['Coton']);
-  assert.equal(f.condition, 'Bon état');
-  assert.equal(f.title, 'Pull à pois marine');
-  assert.equal(f.aiBody, 'Joli pull.');
+  assert.equal(f.rayon, 'Femmes');
+  assert.equal(f.condition, 'Neuf avec étiquette');
+  assert.equal(f.category, '');
+  assert.equal(f.title, ''); // composé sur Vinted, une fois la catégorie choisie
   assert.equal(f.price, '18');
-  const typed = mergeFields({ hints: { brand: 'levis', size: '42' }, ai, local });
+  const typed = mergeFields({ hints: { brand: 'levis', size: '42', condition: 'Satisfaisant', rayon: 'Hommes' }, local });
   assert.equal(typed.brand, "Levi's");
   assert.equal(typed.size, '42');
+  assert.equal(typed.condition, 'Satisfaisant');
+  assert.equal(typed.rayon, 'Hommes');
+  assert.equal(mergeFields({ local: { condition: '' } }).condition, 'Très bon état');
 });
 
-test('mergeLabelPass : complète sans écraser', () => {
-  const main = { brand: '', size: 'M', materials: [], labelText: 'MADE IN CHINA', brandEvidence: '' };
-  const out = mergeLabelPass(main, { brand: 'Tommy Hilfiger', size: 'L', materials: ['Coton'], labelText: 'TOMMY HILFIGER | L', brandEvidence: 'étiquette' });
-  assert.equal(out.brand, 'Tommy Hilfiger');
-  assert.equal(out.size, 'M');
-  assert.deepEqual(out.materials, ['Coton']);
-  assert.equal(out.labelText, 'MADE IN CHINA | TOMMY HILFIGER | L');
+test('buildDescription : texte composé uniquement avec les infos connues', () => {
+  const d = buildDescription({ title: 'Pull Tommy Hilfiger marine taille M', brand: 'Tommy Hilfiger', size: 'M', colors: ['Marine'], condition: 'Très bon état' }, { hashtags: 5, rand: () => 0 });
+  assert.match(d, /Je vends ce pull Tommy Hilfiger marine taille M\./);
+  assert.match(d, /📏 Taille : M/);
+  assert.doesNotMatch(d, /undefined|null/);
 });
 
 // ---------------------------------------------------------------------------
-// Appels IA (fetch simulé)
+// Couleurs
 // ---------------------------------------------------------------------------
 
-test('presets Gemini : modèles de secours', () => {
-  assert.equal(AI_PRESETS.gemini.model, 'gemini-flash-latest');
-  // Modèles de secours de la v3.2.2 conservés (gemini-3.8-flash, gemini-3.5-flash-lite).
-  assert.deepEqual(AI_PRESETS.gemini.fallbackModels, ['gemini-flash-lite-latest', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']);
-  assert.equal(AI_PRESETS.gemini.extra.reasoning_effort, 'low');
+test('voteColors : plusieurs photos, la première compte davantage ; marine dans l’ombre ≠ noir', () => {
+  // Job lauraaix (pull marine à pois) : photos 1, 3 et 4, mesurées sur les vraies photos.
+  const votes = [
+    { colors: [{ name: 'Marine', share: 0.43 }, { name: 'Noir', share: 0.32 }, { name: 'Kaki', share: 0.15 }, { name: 'Crème', share: 0.1 }], weight: 1.5 },
+    { colors: [{ name: 'Marine', share: 0.48 }, { name: 'Noir', share: 0.41 }, { name: 'Beige', share: 0.08 }], weight: 1 },
+    { colors: [{ name: 'Noir', share: 0.49 }, { name: 'Beige', share: 0.29 }, { name: 'Marron', share: 0.12 }], weight: 1 },
+  ];
+  assert.deepEqual(pickListingColors(voteColors(votes)), ['Marine']);
+  // Un vrai noir donne très peu de marine.
+  assert.deepEqual(pickListingColors([{ name: 'Noir', share: 0.8 }, { name: 'Marine', share: 0.12 }]), ['Noir']);
+  assert.deepEqual(voteColors([]), []);
+  assert.deepEqual(voteColors([{ colors: [], weight: 2 }]), []);
 });
 
-test('pickPhotosForAi : 8 photos max, étiquettes toujours incluses', () => {
-  assert.deepEqual(pickPhotosForAi(3, []), [0, 1, 2]);
-  assert.deepEqual(pickPhotosForAi(12, [10]), [0, 1, 2, 3, 4, 5, 6, 10]);
-  assert.deepEqual(pickPhotosForAi(12, [9, 11, 99, -1]), [0, 1, 2, 3, 4, 5, 9, 11]);
+// ---------------------------------------------------------------------------
+// Chaîne complète (lecture d'étiquettes simulée)
+// ---------------------------------------------------------------------------
+
+const photos = (n) => Array.from({ length: n }, (_, i) => ({ base64: `PHOTO${i}`, mime: 'image/jpeg' }));
+
+/** Lecture simulée : texts[i] = texte lu sur la photo i ; lines[i] = lignes rapprochées ; fail[i] = erreur. */
+function fakeRead(texts, { lines = {}, fail = {} } = {}) {
+  const calls = [];
+  const read = async (image, opts) => {
+    const i = Number(/PHOTO(\d+)/.exec(image)?.[1]);
+    calls.push({ i, ...opts });
+    if (fail[i]) throw new Error(fail[i]);
+    return { text: texts[i] || '', score: texts[i] ? 12 : 0, lines: lines[i] || [], regions: 1 };
+  };
+  return { read, calls };
+}
+
+const deps = (read) => ({ read, colors: async () => ['Marine'], prepare: async (p) => `data:image/jpeg;base64,${p.base64}` });
+
+test('analyzePhotos : étiquettes marquées d’abord, arrêt dès marque + taille', async () => {
+  const { read, calls } = fakeRead({ 3: 'TOMMY\nM\nMADE IN CHINA', 4: 'EUR 49,90' });
+  const { fields, recognition } = await analyzePhotos(
+    { photos: photos(5), hints: { labelIndexes: [3], price: '18', rayon: 'Femmes' }, settings: { worker: { defaultCondition: 'Très bon état' } } },
+    deps(read),
+  );
+  assert.deepEqual(calls.map((c) => c.i), [3]); // étiquette marquée lue d'abord : marque + taille trouvées, on s'arrête
+  assert.equal(calls[0].label, true);
+  assert.ok(calls[0].deadline > Date.now());
+  assert.equal(fields.brand, 'Tommy Hilfiger');
+  assert.equal(fields.size, 'M');
+  assert.deepEqual(fields.colors, ['Marine']);
+  assert.equal(fields.condition, 'Très bon état');
+  assert.deepEqual(fields.categoryHints, { rayon: 'Femmes', words: [], search: '' });
+  assert.deepEqual(fields.brandCandidates, []);
+  assert.deepEqual(recognition.found, { brand: 'étiquette', size: 'étiquette', materials: '', rayon: 'saisie', condition: '', colors: 'photos' });
+  assert.equal(recognition.mode, 'auto');
+  assert.deepEqual(recognition.ocr, { photos: 1, error: '' });
 });
 
-test('recognizeItem : mode JSON, 8 images max, indices des étiquettes dans le prompt', async () => {
-  const { fetchImpl, calls } = fakeFetch([{ label_text: 'GANT | L', brand: 'GANT', size: 'L', category: 'Sweats', colors: ['jaune'] }]);
-  const images = pickPhotosForAi(10, [9]).map((i) => ({ url: img(i), index: i, label: i === 9 }));
-  const r = await recognizeItem({ images, hints: { rayon: 'Hommes', notes: 'petite tache' }, config: GEMINI, fetchImpl });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'gemini-flash-latest');
-  assert.deepEqual(calls[0].body.response_format, { type: 'json_object' });
-  assert.equal(calls[0].body.reasoning_effort, 'low');
-  assert.equal(calls[0].images.length, 8);
-  assert.equal(calls[0].images[7], img(9));
-  assert.match(calls[0].prompt, /label_text/);
-  assert.match(calls[0].prompt, /image 7 comme photo d'étiquette/);
-  assert.match(calls[0].prompt, /rayon : Hommes/);
-  assert.match(calls[0].prompt, /petite tache/);
-  assert.equal(r.brand, 'Gant');
-  assert.equal(r.passes, 1);
-  assert.equal(r.model, 'gemini-flash-latest');
+test('analyzePhotos : ticket → neuf avec étiquette ; marque spécialisée → indices ; marque inconnue → candidats', async () => {
+  const { read, calls } = fakeRead({ 0: 'PRIX 129,00 €', 1: 'POLÈNE\nMADE IN SPAIN' });
+  const r1 = await analyzePhotos({ photos: photos(3), hints: {}, settings: {} }, deps(read));
+  assert.deepEqual(calls.map((c) => c.i), [0, 1, 2]); // pas de taille lue : toutes les photos sont lues
+  assert.equal(r1.fields.brand, 'Polène'); // marque de la base élargie, lue directement
+  assert.equal(r1.fields.condition, 'Neuf avec étiquette');
+  assert.equal(r1.recognition.found.condition, 'étiquette');
+  assert.deepEqual(r1.fields.categoryHints.words.slice(0, 2), ['sacs', 'sac']);
+
+  const { read: read2 } = fakeRead({ 1: 'MAISON INCONNUE\n38' }, { lines: { 1: [{ text: 'MAISON INCONNUE', h: 26, conf: 90 }] } });
+  const r2 = await analyzePhotos({ photos: photos(3), hints: { condition: 'Bon état' }, settings: {} }, deps(read2));
+  assert.equal(r2.fields.brand, '');
+  assert.deepEqual(r2.fields.brandCandidates, ['Maison Inconnue']);
+  assert.equal(r2.fields.condition, 'Bon état');
 });
 
-test('chatWithFallback : 400 → second essai sans response_format ni paramètres optionnels (tous les fournisseurs)', async () => {
-  for (const config of [GEMINI, { preset: 'custom', key: 'k', baseUrl: 'https://exemple.test/v1', model: 'mon-modele' }]) {
-    const { fetchImpl, calls } = fakeFetch([{ status: 400, error: "Invalid JSON payload: unknown field 'response_format'" }, '{"ok":true}']);
-    const res = await chatWithFallback(config, [{ role: 'user', content: 'test JSON' }], { fetchImpl });
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].json, true);
-    assert.equal(calls[1].json, false);
-    assert.equal(calls[1].body.reasoning_effort, undefined);
-    assert.equal(calls[1].model, calls[0].model);
-    assert.equal(res.plain, true);
+test('analyzePhotos : saisie prioritaire, lecture coupée dans les réglages, moteur en panne', async () => {
+  const { read, calls } = fakeRead({ 0: 'NIKE\nL' });
+  const typed = await analyzePhotos({ photos: photos(2), hints: { brand: 'adidas', size: '38' }, settings: { worker: { ocr: false } } }, deps(read));
+  assert.equal(calls.length, 0);
+  assert.equal(typed.fields.brand, 'Adidas');
+  assert.equal(typed.fields.size, '38');
+  assert.equal(typed.recognition.found.brand, 'saisie');
+
+  const { read: broken, calls: tried } = fakeRead({}, { fail: { 0: 'moteur absent' } });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const r = await analyzePhotos({ photos: photos(2), hints: {}, settings: {} }, deps(broken));
+    assert.equal(tried.length, 1); // le moteur ne démarre pas : on n'insiste pas
+    assert.equal(r.recognition.ocr.error, 'moteur absent');
+    assert.equal(r.fields.brand, '');
+  } finally {
+    console.warn = warn;
   }
 });
 
-test('chatWithFallback : modèle inconnu, surcharge et quota → modèle suivant ; clé refusée → arrêt', async () => {
-  let f = fakeFetch([{ status: 404, error: 'models/gemini-flash-latest is not found' }, { status: 503, error: 'The model is overloaded' }, '{"ok":true}']);
-  let res = await chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl });
-  assert.deepEqual(f.calls.map((c) => c.model), ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.8-flash']);
-  assert.equal(res.model, 'gemini-3.8-flash');
-
-  f = fakeFetch([{ status: 429, error: 'Resource has been exhausted (e.g. check quota).' }, '{"ok":true}']);
-  res = await chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl });
-  assert.equal(res.quotaHit, true);
-  assert.equal(res.model, 'gemini-flash-lite-latest');
-
-  f = fakeFetch([{ status: 429, error: 'quota' }]);
-  await assert.rejects(chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl }), (e) => e.code === 'quota' && /^Quota IA atteint/.test(e.message));
-  assert.equal(f.calls.length, 6);
-
-  f = fakeFetch([{ status: 400, error: [{ error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } }] }]);
-  await assert.rejects(chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl: f.fetchImpl }), (e) => e.code === 'auth' && /^Clé IA refusée/.test(e.message));
-  assert.equal(f.calls.length, 1);
-
-  await assert.rejects(chatWithFallback({ preset: 'gemini', key: '' }, [], {}), (e) => e.code === 'no-key');
-});
-
-test('chatWithFallback : délai dépassé → message clair', async () => {
-  const fetchImpl = (_url, init) =>
-    new Promise((_resolve, reject) => {
-      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-    });
-  await assert.rejects(chatWithFallback(GEMINI, [{ role: 'user', content: 'x' }], { fetchImpl, timeoutMs: 30 }), (e) => e.code === 'timeout' && e.message === "L'IA n'a pas répondu à temps");
-});
-
-test('recognizeItem : réponse illisible', async () => {
-  const { fetchImpl } = fakeFetch(['Désolé, je ne peux pas.']);
-  await assert.rejects(recognizeItem({ images: [img(0)], config: GEMINI, fetchImpl }), (e) => e.code === 'parse' && e.message === "Réponse de l'IA illisible");
-});
-
-test('recognizeItem : seconde passe « étiquette » (photos HD), fusion sans écraser', async () => {
-  const { fetchImpl, calls } = fakeFetch([
-    { label_text: 'MADE IN CHINA', label_photos: [1], brand: '', size: 'S', category: 'Pulls', colors: ['marine'], title: 'Pull à pois' },
-    { label_text: 'TOMMY HILFIGER | M', brand: 'TOMMY HILFIGER', size: 'M', materials: ['coton'] },
-  ]);
-  const asked = [];
-  const images = [0, 1, 2].map((i) => ({ url: img(i), index: i, label: false }));
-  const r = await recognizeItem({
-    images,
-    hints: {},
-    config: GEMINI,
-    fetchImpl,
-    labelImages: async (idx) => {
-      asked.push(...idx);
-      return idx.map((i) => `data:image/jpeg;base64,HD${i}`);
-    },
-  });
-  assert.equal(calls.length, 2);
-  assert.deepEqual(asked, [1]);
-  assert.deepEqual(calls[1].images, ['data:image/jpeg;base64,HD1']);
-  assert.equal(calls[1].json, true);
-  assert.match(calls[1].prompt, /ÉTIQUETTES/);
-  assert.equal(r.passes, 2);
-  assert.equal(r.brand, 'Tommy Hilfiger');
-  assert.equal(r.brandEvidence, 'étiquette');
-  assert.equal(r.size, 'S'); // valeur de la passe principale conservée
-  assert.deepEqual(r.materials, ['Coton']);
-  assert.deepEqual(r.labelPhotos, [1]);
-  assert.match(r.labelText, /TOMMY HILFIGER/);
-});
-
-test('recognizeItem : photos marquées par le vendeur → seconde passe, indices d’origine', async () => {
-  const { fetchImpl, calls } = fakeFetch([{ brand: '', size: '', label_photos: [] }, { brand: 'Gant', size: 'XL' }]);
-  const images = [{ url: img(0), index: 0 }, { url: img(4), index: 4, label: true }];
-  const r = await recognizeItem({ images, config: GEMINI, fetchImpl });
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1].images, [img(4)]);
-  assert.equal(r.passes, 2);
-  assert.equal(r.brand, 'Gant');
-  assert.equal(r.size, 'XL');
-});
-
-test('recognizeItem : pas de seconde passe si marque et taille connues, ou après un quota', async () => {
-  let f = fakeFetch([{ brand: 'Nike', size: '42', label_photos: [0] }]);
-  let r = await recognizeItem({ images: [img(0)], config: GEMINI, fetchImpl: f.fetchImpl });
-  assert.equal(f.calls.length, 1);
-  assert.equal(r.passes, 1);
-
-  // Le vendeur a saisi marque et taille : inutile de relire.
-  f = fakeFetch([{ brand: '', size: '', label_photos: [0] }]);
-  r = await recognizeItem({ images: [img(0)], hints: { brand: 'Zara', size: 'S' }, config: GEMINI, fetchImpl: f.fetchImpl });
-  assert.equal(f.calls.length, 1);
-
-  // 429 sur le premier modèle, le suivant répond : pas de seconde passe.
-  f = fakeFetch([{ status: 429, error: 'quota' }, { brand: '', size: '', label_photos: [0] }, { brand: 'Gant' }]);
-  r = await recognizeItem({ images: [img(0)], config: GEMINI, fetchImpl: f.fetchImpl });
-  assert.equal(f.calls.length, 2);
-  assert.equal(r.passes, 1);
-  assert.equal(r.quotaHit, true);
-  assert.equal(r.brand, '');
-
-  // 429 pendant la seconde passe : on garde le résultat principal, sans changer de modèle.
-  f = fakeFetch([{ brand: '', size: 'M', label_photos: [0], category: 'Pulls' }, { status: 429, error: 'quota' }, { brand: 'Gant' }]);
-  r = await recognizeItem({ images: [img(0)], config: GEMINI, fetchImpl: f.fetchImpl });
-  assert.equal(f.calls.length, 2);
-  assert.equal(r.passes, 1);
-  assert.equal(r.category, 'Pulls');
-  assert.match(r.labelError, /^Quota IA atteint/);
-});
-
-test('buildPrompt : liste fermée des catégories et règles de désambiguïsation', () => {
-  const p = buildPrompt({ brand: 'Gant', size: 'M' }, { count: 3, labelImages: [0, 2] });
-  assert.match(p, /liste fermée/);
-  assert.match(p, /"Pulls"/);
-  assert.match(p, /"Gilets"/);
-  assert.match(p, /marque : Gant ; taille : M/);
-  assert.match(p, /images 0 et 2 comme photos d'étiquette/);
-  assert.match(p, /numérotées de 0 à 2/);
+test('readLabels : marque, taille, matières et indices d’un texte d’étiquettes', () => {
+  const r = readLabels('LACOSTE\nTAILLE 4\n80% COTON 20% POLYESTER\nWOMEN');
+  assert.equal(r.brand, 'Lacoste');
+  assert.deepEqual(r.materials, ['Coton', 'Polyester']);
+  assert.equal(r.clues.rayon, 'Femmes');
 });
 
 // ---------------------------------------------------------------------------
@@ -499,7 +408,8 @@ test('jpegDims : dimensions lues dans l’en-tête JPEG', () => {
   assert.equal(jpegDims(''), null);
 });
 
-test('ocrImages : un OCR figé (packs de langue injoignables) abandonne au lieu de bloquer le robot', async () => {
+
+test('ocrPhoto : un moteur figé abandonne au lieu de bloquer le robot', async () => {
   const prev = globalThis.chrome;
   globalThis.chrome = {
     runtime: {
@@ -511,20 +421,29 @@ test('ocrImages : un OCR figé (packs de langue injoignables) abandonne au lieu 
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     let settled = false;
-    const outcome = ocrImages(['data:image/jpeg;base64,AAAA'])
+    const outcome = ocrPhoto('data:image/jpeg;base64,AAAA')
       .then(() => 'résolu', (e) => e.message)
       .finally(() => (settled = true));
     const flush = async () => {
       for (let i = 0; i < 10; i += 1) await Promise.resolve(); // laisse ensureOffscreen() se terminer
     };
     await flush();
-    mock.timers.tick(69999); // 60 s + 10 s par image
+    mock.timers.tick(59999);
     await flush();
     assert.equal(settled, false);
     mock.timers.tick(1);
-    assert.match(await outcome, /^OCR trop long/);
+    assert.match(await outcome, /trop longue/);
   } finally {
     mock.timers.reset();
     globalThis.chrome = prev;
   }
+});
+
+test('code de connexion : relais seulement ; un ancien code avec clé IA reste accepté', () => {
+  const relay = { owner: 'o', repo: 'r', branch: 'main', token: 'tok' };
+  const code = encodeConnection({ relay, name: 'Elias' });
+  assert.deepEqual(decodeConnection(code), { relay, name: 'Elias' });
+  const b64 = (o) => utf8ToBase64(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  assert.deepEqual(decodeConnection(`REV1.${b64({ v: 1, gh: relay, ai: { preset: 'gemini', key: 'cle' } })}`), { relay, name: '' });
+  assert.doesNotMatch(Buffer.from(code.slice(5).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(), /"ai"/);
 });

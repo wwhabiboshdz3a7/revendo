@@ -15,11 +15,13 @@ import { GitHubRelay } from './shared/relay.js';
 import { CONDITIONS } from './shared/vinted-data.js';
 import { hydrateIcons, icon } from './icons.js';
 
-const VERSION = '3.3.0';
+const VERSION = '3.4.0';
 const MAX_PHOTOS = 20;
 const PREP_PARALLEL = 2; // photos compressées en même temps
 const UPLOAD_PARALLEL = 3; // photos envoyées en même temps
 const PHOTO_TARGET = { maxSide: 1600, maxBytes: 400 * 1024 };
+// Photo d'étiquette : plus grande et moins compressée, pour que le PC lise la marque et la taille.
+const LABEL_TARGET = { maxSide: 2048, maxBytes: 900 * 1024 };
 const POLL_MS = 12000;
 const RAYONS = [['', 'Auto'], ['Femmes', 'Femme'], ['Hommes', 'Homme'], ['Enfants', 'Enfant'], ['Maison', 'Maison']];
 
@@ -499,15 +501,21 @@ document.addEventListener('keydown', (e) => {
 // Détail d'une annonce
 // ===========================================================================
 
-/** Ligne « Reconnaissance » : IA + modèle, ou mode gratuit avec la raison. */
+/**
+ * Ligne « Reconnaissance » : ce que le PC a lu sur les étiquettes (sans IA).
+ * Les statuts d'avant la 3.4 (IA, mode gratuit) n'affichent rien.
+ */
 function recognitionView(sum) {
-  if (sum.mode === 'ai') return { cls: 'ai', ic: 'sparkles', text: sum.aiModel ? `IA · ${sum.aiModel}` : 'IA' };
-  if (sum.mode === 'free') {
-    if (sum.noKey) return { cls: 'free', ic: 'info', text: 'Mode gratuit — pas de clé IA sur le PC' };
-    if (sum.aiError) return { cls: 'warn', ic: 'alert', text: `Mode gratuit — IA indisponible : ${sum.aiError}` };
-    return { cls: 'free', ic: 'info', text: 'Mode gratuit' };
-  }
-  return null;
+  if (sum.mode !== 'auto') return null;
+  if (sum.ocrError) return { cls: 'warn', ic: 'alert', text: `Étiquettes illisibles : ${sum.ocrError}` };
+  const f = sum.found || {};
+  const parts = [
+    f.brand === 'étiquette' && 'marque lue sur l’étiquette',
+    f.brand === 'vinted' && 'marque vérifiée sur Vinted',
+    f.size === 'étiquette' && 'taille lue',
+    f.condition === 'étiquette' && 'ticket de prix lu',
+  ].filter(Boolean);
+  return parts.length ? { cls: 'auto', ic: 'tag', text: parts.join(' · ') } : { cls: 'free', ic: 'info', text: 'Rien de lisible sur les étiquettes' };
 }
 
 /** Ligne « Photos » : visibles / envoyées (statut récent, sinon déduit des champs). */
@@ -697,9 +705,22 @@ $('settingsBtn').addEventListener('click', () => {
 /**
  * Photo du formulaire. state : 'prep' (compression) → 'up' (envoi du blob)
  * → 'ok' (sha connu) | 'err' (envoi échoué : relancé au clic « Envoyer »).
+ * Le fichier d'origine est gardé : une photo marquée « étiquette » après coup
+ * est recompressée en haute définition (hd) et renvoyée.
  */
 function newPhoto(file) {
-  return { id: Math.random().toString(36).slice(2, 10), file, state: 'prep', busy: false, preview: '', thumb: '', base64: '', bytes: 0, sha: '', isLabel: false, error: '' };
+  return { id: Math.random().toString(36).slice(2, 10), file, state: 'prep', busy: false, preview: '', thumb: '', base64: '', bytes: 0, sha: '', isLabel: false, hd: false, redo: false, error: '' };
+}
+
+/** Marquée « étiquette » après sa préparation : on la refait en haute définition (dès qu'elle est libre). */
+function upgradeLabel(p) {
+  if (!p.isLabel || p.hd || !p.file) return;
+  if (p.busy) p.redo = true;
+  else if (p.state !== 'prep') {
+    p.state = 'prep';
+    p.sha = '';
+    p.error = '';
+  }
 }
 
 /** Lance les préparations (2 à la fois) puis les envois (3 à la fois), dans l'ordre de la grille. */
@@ -719,10 +740,11 @@ async function preparePhoto(p) {
   p.busy = true;
   pipe.prep += 1;
   try {
-    // ~400 Ko max : Safari encode « 0,85 » comme ~95 % (≈ 900 Ko par photo).
-    const jpg = await toJpegTarget(p.file, PHOTO_TARGET);
+    // ~400 Ko max : Safari encode « 0,85 » comme ~95 % (≈ 900 Ko par photo). Étiquette : HD.
+    const hd = p.isLabel;
+    const jpg = await toJpegTarget(p.file, hd ? LABEL_TARGET : PHOTO_TARGET);
     const [preview, thumb] = await Promise.all([toJpeg(jpg.dataUrl, { maxSide: 540, quality: 0.8 }), toJpeg(jpg.dataUrl, { maxSide: 160, quality: 0.7 })]);
-    Object.assign(p, { file: null, base64: jpg.base64, bytes: jpg.bytes, preview: preview.dataUrl, thumb: thumb.dataUrl, state: 'up' });
+    Object.assign(p, { base64: jpg.base64, bytes: jpg.bytes, preview: preview.dataUrl, thumb: thumb.dataUrl, hd, state: 'up' });
   } catch (err) {
     p.state = 'bad';
     if (form.photos.includes(p)) {
@@ -732,6 +754,10 @@ async function preparePhoto(p) {
   } finally {
     p.busy = false;
     pipe.prep -= 1;
+    if (p.redo) {
+      p.redo = false;
+      upgradeLabel(p);
+    }
     photosChanged();
   }
 }
@@ -749,6 +775,10 @@ async function uploadPhoto(p) {
   } finally {
     p.busy = false;
     pipe.up -= 1;
+    if (p.redo) {
+      p.redo = false;
+      upgradeLabel(p);
+    }
     photosChanged();
   }
 }
@@ -839,12 +869,12 @@ function renderPhotos() {
   add.setAttribute('aria-label', n ? `Ajouter des photos (${n} sur ${MAX_PHOTOS})` : 'Ajouter des photos');
   add.innerHTML = n
     ? `${icon('plus', { size: 22 })}<span>Ajouter</span><small>${n}/${MAX_PHOTOS}</small>`
-    : `<span class="add-icon">${icon('camera', { size: 24 })}</span><b>Ajouter des photos</b><small>Prends l’article et son étiquette (taille, marque) : la reconnaissance sera meilleure.</small>`;
+    : `<span class="add-icon">${icon('camera', { size: 24 })}</span><b>Ajouter des photos</b><small>Prends l’article et son étiquette de près, bien nette : le PC y lit la marque et la taille.</small>`;
   grid.appendChild(add);
   grid.classList.toggle('is-locked', form.sending);
   $('photoCount').textContent = n ? `${n}/${MAX_PHOTOS}` : '';
   $('photoHint').classList.toggle('hidden', !n);
-  if (n && !$('photoHint').childElementCount) $('photoHint').innerHTML = `Touche une photo pour en faire la couverture. Touche ${icon('tag', { size: 15 })} sur la photo de l’étiquette (taille, marque) : la reconnaissance sera meilleure.`;
+  if (n && !$('photoHint').childElementCount) $('photoHint').innerHTML = `Touche une photo pour en faire la couverture. Touche ${icon('tag', { size: 15 })} sur la photo de l’étiquette : elle part en haute définition et le PC y lit la marque et la taille.`;
 }
 
 $('photoGrid').addEventListener('click', (e) => {
@@ -859,7 +889,10 @@ $('photoGrid').addEventListener('click', (e) => {
   if (!p) return;
   if (act === 'del') form.photos = form.photos.filter((x) => x !== p);
   else if (act === 'cover') form.photos = [p, ...form.photos.filter((x) => x !== p)];
-  else if (act === 'label') p.isLabel = !p.isLabel;
+  else if (act === 'label') {
+    p.isLabel = !p.isLabel;
+    upgradeLabel(p);
+  }
   else if (act === 'retry' && p.state === 'err') {
     p.state = 'up';
     p.error = '';
