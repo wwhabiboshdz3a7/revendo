@@ -1,0 +1,12 @@
+{
+  "id": "20261010-143653-2gfo",
+  "account": "elias..djb",
+  "state": "processing",
+  "startedAt": "2026-10-10T14:40:16.269Z",
+  "updatedAt": "2026-10-10T14:40:16.269Z",
+  "worker": {
+    "login": "elias..djb",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
