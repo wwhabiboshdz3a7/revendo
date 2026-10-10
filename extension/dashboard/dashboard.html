@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>Revendo</title>
+<link rel="icon" href="../icons/icon48.png" />
+<link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+<div class="app">
+  <!-- ===================== BARRE LATÉRALE ===================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><span data-icon="tag" data-size="18"></span></span>
+      <span class="brand-text"><b>Revendo</b><small>Brouillons Vinted</small></span>
+    </div>
+
+    <nav class="nav" id="tabs" aria-label="Sections">
+      <button type="button" class="nav-item" data-tab="annonce"><span data-icon="plusSquare"></span><span class="nav-label">Nouvelle annonce</span></button>
+      <button type="button" class="nav-item" data-tab="file"><span data-icon="inbox"></span><span class="nav-label">File d'attente</span><span class="nav-count" id="queueCount"></span></button>
+      <button type="button" class="nav-item" data-tab="comptes"><span data-icon="users"></span><span class="nav-label">Comptes</span></button>
+      <button type="button" class="nav-item" data-tab="reglages"><span data-icon="settings"></span><span class="nav-label">Réglages</span></button>
+      <button type="button" class="nav-item" data-tab="journal"><span data-icon="activity"></span><span class="nav-label">Journal</span></button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="robot robot-off" id="robotPill" role="status" aria-live="polite">
+        <span class="robot-dot"></span>
+        <span class="robot-text"><b>Robot…</b><small>&nbsp;</small></span>
+      </div>
+      <div class="side-account" title="Compte Vinted de ce profil Chrome">
+        <span class="avatar" id="avatar">R</span>
+        <span class="side-account-text"><b id="accountName">Compte Vinted</b><small id="accountLine">Détection…</small></span>
+      </div>
+      <p class="side-version" id="version"></p>
+    </div>
+  </aside>
+
+  <!-- ===================== CONTENU ===================== -->
+  <main class="main">
+
+    <!-- ===================== NOUVELLE ANNONCE ===================== -->
+    <section class="tab-panel" data-panel="annonce" aria-labelledby="h-annonce">
+      <header class="page-head">
+        <div class="page-title">
+          <h1 id="h-annonce">Nouvelle annonce</h1>
+          <p id="greeting">Photos et prix : Revendo reconnaît l'article et prépare le brouillon Vinted.</p>
+        </div>
+        <div class="page-actions">
+          <button id="resetBtn" type="button" class="btn btn-ghost"><span data-icon="eraser"></span>Tout effacer</button>
+        </div>
+      </header>
+
+      <div class="compose">
+        <div class="col">
+          <!-- 1. Photos -->
+          <section class="card" aria-labelledby="h-photos">
+            <div class="card-head">
+              <span class="step">1</span>
+              <div class="card-head-text"><h2 id="h-photos">Photos</h2><p>1re photo = couverture · double-clic ou étoile pour changer</p></div>
+              <span class="card-meta num" id="photoCount"></span>
+            </div>
+            <label class="dropzone" id="dropzone">
+              <input type="file" id="photoInput" accept="image/*" multiple />
+              <span class="dz-icon"><span data-icon="imagePlus" data-size="22"></span></span>
+              <span class="dz-text"><b>Ajouter des photos</b><small>ou glisse-les ici · 20 max · compressées à ~400 Ko</small></span>
+            </label>
+            <div id="photoGrid" class="photo-grid"></div>
+          </section>
+
+          <!-- 2. Prix & compte -->
+          <section class="card" aria-labelledby="h-price">
+            <div class="card-head">
+              <span class="step">2</span>
+              <div class="card-head-text"><h2 id="h-price">Prix et compte</h2><p>Le seul champ obligatoire est le prix</p></div>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label class="label" for="price">Prix</label>
+                <div class="input-affix">
+                  <input type="text" id="price" class="input num" inputmode="decimal" placeholder="20 ou 19,90" autocomplete="off" />
+                  <span class="affix" aria-hidden="true">€</span>
+                </div>
+                <p id="priceCheck" class="msg"></p>
+              </div>
+              <div class="field">
+                <label class="label" for="target">Compte Vinted</label>
+                <select id="target" class="input"></select>
+                <p class="field-hint" id="targetHint"></p>
+              </div>
+            </div>
+            <div class="field">
+              <span class="label" id="rayonLabel">Rayon</span>
+              <div class="chips" id="rayonChips" role="radiogroup" aria-labelledby="rayonLabel"></div>
+            </div>
+            <div id="aiNudge" class="callout callout-accent hidden">
+              <span data-icon="sparkles"></span>
+              <span><b>Reconnaissance limitée sans IA.</b> Le mode gratuit devine mal la marque et la catégorie. Une clé Gemini gratuite corrige ça en 1 minute. <button type="button" class="link" id="nudgeSettingsBtn">Ajouter une clé</button></span>
+            </div>
+            <button id="analyzeBtn" type="button" class="btn btn-secondary btn-block"><span data-icon="sparkles"></span>Reconnaître l'article depuis les photos</button>
+            <p class="msg" id="analyzeStatus"></p>
+          </section>
+
+          <!-- 3. Détails -->
+          <section class="card" aria-labelledby="h-details">
+            <div class="card-head">
+              <span class="step">3</span>
+              <div class="card-head-text"><h2 id="h-details">Détails</h2><p>Pré-remplis par la reconnaissance, tous modifiables</p></div>
+            </div>
+            <div class="field">
+              <label class="label" for="title">Titre</label>
+              <input type="text" id="title" class="input" maxlength="100" placeholder="Ex : Pull Nike col rond gris" />
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label class="label" for="category">Catégorie</label>
+                <input type="text" id="category" class="input" list="categoryList" placeholder="Vide = recommandation de Vinted" />
+                <datalist id="categoryList"></datalist>
+              </div>
+              <div class="field">
+                <label class="label" for="brand">Marque</label>
+                <input type="text" id="brand" class="input" placeholder="Créée sur Vinted si absente" />
+              </div>
+            </div>
+            <div class="field">
+              <label class="label" for="size">Taille</label>
+              <div class="size-row">
+                <div class="chips" id="sizeChips"></div>
+                <input type="text" id="size" class="input size-input" placeholder="Autre : 38, W30, 10 ans…" />
+              </div>
+            </div>
+            <div class="field">
+              <span class="label" id="conditionLabel">État</span>
+              <div class="options" id="conditionGroup" role="radiogroup" aria-labelledby="conditionLabel"></div>
+            </div>
+            <div class="field">
+              <span class="label" id="colorLabel">Couleur <span class="muted">· 2 max</span></span>
+              <div class="swatches" id="colorSwatches" role="group" aria-labelledby="colorLabel"></div>
+            </div>
+            <div class="grid-3">
+              <div class="field">
+                <label class="label" for="material1">Matériau</label>
+                <select id="material1" class="input"></select>
+              </div>
+              <div class="field">
+                <label class="label" for="material2">2e matériau</label>
+                <select id="material2" class="input"></select>
+              </div>
+              <div class="field">
+                <label class="label" for="parcel">Colis</label>
+                <select id="parcel" class="input">
+                  <option value="">Laisser Vinted</option>
+                  <option value="Petit">Petit</option>
+                  <option value="Moyen">Moyen</option>
+                  <option value="Grand">Grand</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- 4. Description -->
+          <section class="card" aria-labelledby="h-desc">
+            <div class="card-head">
+              <span class="step">4</span>
+              <div class="card-head-text"><h2 id="h-desc">Description</h2><p>Rédigée automatiquement, modifiable</p></div>
+              <label class="switch-inline"><input type="checkbox" id="autoDesc" class="switch" checked /><span>Auto</span></label>
+            </div>
+            <textarea id="description" class="input" rows="14" placeholder="Rédigée automatiquement, modifiable."></textarea>
+            <div class="row-between">
+              <p id="descCount" class="field-hint num"></p>
+              <button id="regenBtn" type="button" class="btn btn-ghost btn-sm"><span data-icon="refresh" data-size="16"></span>Régénérer</button>
+            </div>
+          </section>
+
+          <!-- Boost référencement (calcul local) -->
+          <section class="card seo-card" id="seoCard" aria-labelledby="h-seo">
+            <div class="card-head">
+              <span class="card-icon"><span data-icon="trendingUp"></span></span>
+              <div class="card-head-text"><h2 id="h-seo">Référencement</h2><p id="seoGrade"></p></div>
+              <div class="seo-score num"><b id="seoScore">0</b><span>/100</span></div>
+            </div>
+            <div class="seo-bar"><div id="seoBar"></div></div>
+            <p class="field-hint seo-auto"><span data-icon="check" data-size="16"></span><span>Titre et description sont optimisés automatiquement (marque, taille, couleur, matière, état, synonymes). Les points restants dépendent d'infos à fournir.</span></p>
+            <ul class="seo-todo" id="seoTodo"></ul>
+            <div class="field" id="seoTitleBox">
+              <span class="label">Titre conseillé</span>
+              <div class="seo-title"><span id="seoTitle"></span><button id="applyTitleBtn" type="button" class="btn btn-secondary btn-sm">Utiliser</button></div>
+            </div>
+            <div class="field" id="seoKwBox">
+              <span class="label">Détails en plus <span class="muted">· optionnel, ajoute seulement ce qui est vrai</span></span>
+              <div class="chips chips-sm" id="seoKeywords"></div>
+            </div>
+            <details class="seo-tips">
+              <summary><span>Comment marche la recherche Vinted ?</span><span data-icon="chevronDown" data-size="16"></span></summary>
+              <ul id="seoTips"></ul>
+            </details>
+          </section>
+        </div>
+
+        <div class="col col-aside">
+          <!-- Récapitulatif + création -->
+          <section class="card create-card" aria-labelledby="h-recap">
+            <div class="card-head">
+              <div class="card-head-text"><h2 id="h-recap">Récapitulatif</h2><p>Le brouillon est enregistré, jamais publié</p></div>
+            </div>
+            <dl class="recap" id="recap"></dl>
+            <label class="check-row"><input type="checkbox" id="autoSave" checked /><span>Enregistrer automatiquement le brouillon</span></label>
+            <button id="createBtn" type="button" class="btn btn-primary btn-lg btn-block"><span id="createLabel">Créer le brouillon</span><span data-icon="arrowRight"></span></button>
+            <div id="createStatus" class="msg msg-center" role="status" aria-live="polite"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== FILE D'ATTENTE ===================== -->
+    <section class="tab-panel hidden" data-panel="file" aria-labelledby="h-file">
+      <header class="page-head">
+        <div class="page-title">
+          <h1 id="h-file">File d'attente</h1>
+          <p>Annonces envoyées depuis le téléphone et ce PC · mise à jour automatique</p>
+        </div>
+        <div class="page-actions">
+          <button id="refreshQueueBtn" type="button" class="btn btn-secondary"><span data-icon="refresh"></span>Actualiser</button>
+          <button id="pollBtn" type="button" class="btn btn-primary"><span data-icon="play"></span>Traiter maintenant</button>
+        </div>
+      </header>
+      <p class="msg msg-block" id="robotLine" role="status"></p>
+      <div class="toolbar">
+        <div class="segmented" id="queueFilter" role="radiogroup" aria-label="Filtrer les annonces">
+          <button type="button" class="seg" data-filter="all" role="radio" aria-checked="true">Toutes <span class="seg-count num"></span></button>
+          <button type="button" class="seg" data-filter="open" role="radio" aria-checked="false">En cours <span class="seg-count num"></span></button>
+          <button type="button" class="seg" data-filter="done" role="radio" aria-checked="false">Terminées <span class="seg-count num"></span></button>
+          <button type="button" class="seg" data-filter="error" role="radio" aria-checked="false">Échecs <span class="seg-count num"></span></button>
+        </div>
+      </div>
+      <div id="queueList" class="queue" aria-live="polite"></div>
+    </section>
+
+    <!-- ===================== COMPTES ===================== -->
+    <section class="tab-panel hidden" data-panel="comptes" aria-labelledby="h-comptes">
+      <header class="page-head">
+        <div class="page-title">
+          <h1 id="h-comptes">Comptes</h1>
+          <p>Un profil Chrome = un compte Vinted. Chaque profil traite les annonces de son compte.</p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="h-this">
+        <div class="card-head">
+          <span class="card-icon"><span data-icon="monitor"></span></span>
+          <div class="card-head-text"><h2 id="h-this">Ce profil Chrome</h2><p>Compte Vinted connecté dans ce navigateur</p></div>
+        </div>
+        <div id="thisAccount" class="this-account"></div>
+        <div class="row-gap">
+          <button id="detectBtn" type="button" class="btn btn-secondary"><span data-icon="search"></span>Détecter le compte Vinted</button>
+          <button id="announceBtn" type="button" class="btn btn-secondary"><span data-icon="send"></span>Déclarer ce compte au téléphone</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-relayacc">
+        <div class="card-head">
+          <span class="card-icon"><span data-icon="users"></span></span>
+          <div class="card-head-text"><h2 id="h-relayacc">Comptes déclarés dans le relais</h2><p>Visibles par le téléphone · point vert = vu il y a moins de 45 min</p></div>
+          <button id="refreshAccountsBtn" type="button" class="btn-icon" aria-label="Actualiser les comptes"><span data-icon="refresh"></span></button>
+        </div>
+        <div id="accountsList" class="list"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-howto">
+        <div class="card-head">
+          <span class="card-icon"><span data-icon="plus"></span></span>
+          <div class="card-head-text"><h2 id="h-howto">Ajouter un compte</h2><p>Pour 4 comptes : 4 profils Chrome, ouverts en même temps sur le PC</p></div>
+        </div>
+        <ol class="steps">
+          <li><span class="step">1</span><span>Crée un profil Chrome (menu profil en haut à droite → « Ajouter »).</span></li>
+          <li><span class="step">2</span><span>Installe l'extension Revendo dans ce profil et connecte-toi à Vinted avec le bon compte.</span></li>
+          <li><span class="step">3</span><span>Colle le code de connexion (Réglages → Connexion) : relais et IA sont configurés d'un coup.</span></li>
+          <li><span class="step">4</span><span>Laisse la fenêtre ouverte : ce profil traitera les annonces de son compte.</span></li>
+        </ol>
+      </section>
+    </section>
+
+    <!-- ===================== RÉGLAGES ===================== -->
+    <section class="tab-panel hidden" data-panel="reglages" aria-labelledby="h-reglages">
+      <header class="page-head">
+        <div class="page-title">
+          <h1 id="h-reglages">Réglages</h1>
+          <p>Relais, reconnaissance et robot de ce profil Chrome</p>
+        </div>
+      </header>
+
+      <!-- Relais GitHub -->
+      <section class="card settings" aria-labelledby="h-relay">
+        <div class="settings-intro">
+          <span class="card-icon"><span data-icon="gitBranch"></span></span>
+          <h2 id="h-relay">Relais GitHub</h2>
+          <p>Base de données entre le téléphone et ce PC. Token « fine-grained » limité à ce dépôt, permission <b>Contents : Read and write</b>.</p>
+          <p class="settings-state" id="relayState"></p>
+        </div>
+        <div class="settings-body">
+          <div class="grid-3">
+            <div class="field"><label class="label" for="ghOwner">Compte GitHub</label><input type="text" id="ghOwner" class="input" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label class="label" for="ghRepo">Dépôt</label><input type="text" id="ghRepo" class="input" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label class="label" for="ghBranch">Branche</label><input type="text" id="ghBranch" class="input" autocomplete="off" spellcheck="false" /></div>
+          </div>
+          <div class="field"><label class="label" for="ghToken">Token GitHub</label><input type="password" id="ghToken" class="input mono" placeholder="github_pat_…" autocomplete="off" spellcheck="false" /></div>
+          <div class="callout callout-neutral">
+            <span data-icon="info"></span>
+            <span>Les photos transitent par le dépôt le temps du traitement, puis sont supprimées une fois le brouillon créé.</span>
+          </div>
+          <div class="form-actions">
+            <button id="testRelayBtn" type="button" class="btn btn-secondary"><span data-icon="checkCircle"></span>Tester la connexion</button>
+            <button id="saveRelayBtn" type="button" class="btn btn-primary">Enregistrer</button>
+          </div>
+          <p class="msg" id="relayStatus"></p>
+          <p class="msg info" id="relayInfo"></p>
+        </div>
+      </section>
+
+      <!-- IA -->
+      <section class="card settings" aria-labelledby="h-ai">
+        <div class="settings-intro">
+          <span class="card-icon"><span data-icon="sparkles"></span></span>
+          <h2 id="h-ai">Reconnaissance par IA</h2>
+          <p>Catégorie, marque, taille, couleur, matière : il ne reste que le prix à donner.</p>
+          <p class="settings-state" id="aiState"></p>
+        </div>
+        <div class="settings-body">
+          <div class="callout callout-accent">
+            <span data-icon="sparkles"></span>
+            <span><b>Recommandé : une clé Gemini gratuite.</b> Sans IA, le mode gratuit (couleur + lecture des étiquettes) reconnaît mal la marque et la catégorie. Avec Gemini, l'étiquette est lue et l'article identifié. Clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</span>
+          </div>
+          <label class="switch-row">
+            <span class="switch-text"><b>Utiliser l'IA</b><small>Sinon : mode gratuit (couleur, OCR des étiquettes, catégorie recommandée par Vinted)</small></span>
+            <input type="checkbox" id="aiEnabled" class="switch" />
+          </label>
+          <div class="grid-3 grid-ai">
+            <div class="field"><label class="label" for="aiPreset">Fournisseur</label><select id="aiPreset" class="input"></select></div>
+            <div class="field"><label class="label" for="aiModel">Modèle <span class="muted">· optionnel</span></label><input type="text" id="aiModel" class="input" placeholder="par défaut" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label class="label" for="aiBaseUrl">Adresse API <span class="muted">· « Autre »</span></label><input type="text" id="aiBaseUrl" class="input" placeholder="https://…/v1" autocomplete="off" spellcheck="false" /></div>
+          </div>
+          <div class="field"><label class="label" for="aiKey">Clé API</label><input type="password" id="aiKey" class="input mono" placeholder="Colle ta clé ici" autocomplete="off" spellcheck="false" /></div>
+          <div class="form-actions">
+            <a id="aiKeyLink" class="btn btn-ghost" target="_blank" rel="noopener"><span data-icon="external"></span>Obtenir une clé</a>
+            <span class="spacer"></span>
+            <button id="testAiBtn" type="button" class="btn btn-secondary"><span data-icon="checkCircle"></span>Tester la clé</button>
+            <button id="saveAiBtn" type="button" class="btn btn-primary">Enregistrer</button>
+          </div>
+          <p class="msg" id="aiStatus"></p>
+        </div>
+      </section>
+
+      <!-- Robot -->
+      <section class="card settings" aria-labelledby="h-robot">
+        <div class="settings-intro">
+          <span class="card-icon"><span data-icon="bot"></span></span>
+          <h2 id="h-robot">Robot</h2>
+          <p>Ce que fait ce profil quand une annonce arrive du téléphone. Il ne publie jamais à ta place.</p>
+        </div>
+        <div class="settings-body">
+          <div class="switch-list">
+            <label class="switch-row">
+              <span class="switch-text"><b>Traiter automatiquement</b><small>Les annonces du téléphone pour le compte de ce profil</small></span>
+              <input type="checkbox" id="wEnabled" class="switch" />
+            </label>
+            <label class="switch-row">
+              <span class="switch-text"><b>Sauvegarder le brouillon</b><small>Clique « Sauvegarder le brouillon », jamais « Ajouter »</small></span>
+              <input type="checkbox" id="wAutoSave" class="switch" />
+            </label>
+            <label class="switch-row">
+              <span class="switch-text"><b>Fermer la fenêtre Vinted</b><small>Une fois le brouillon enregistré</small></span>
+              <input type="checkbox" id="wCloseTab" class="switch" />
+            </label>
+            <label class="switch-row">
+              <span class="switch-text"><b>Lire les étiquettes (OCR)</b><small>Mode gratuit : marque et taille lues sur les photos</small></span>
+              <input type="checkbox" id="wOcr" class="switch" />
+            </label>
+          </div>
+          <div class="grid-3">
+            <div class="field"><label class="label" for="wCondition">État par défaut</label><select id="wCondition" class="input"></select></div>
+            <div class="field"><label class="label" for="pName">Prénom <span class="muted">· accueil</span></label><input type="text" id="pName" class="input" autocomplete="given-name" /></div>
+            <div class="field"><label class="label" for="pSignature">Signature des annonces</label><input type="text" id="pSignature" class="input" /></div>
+          </div>
+          <div class="field field-narrow"><label class="label" for="pHashtags">Nombre de hashtags</label><input type="number" id="pHashtags" class="input num" min="0" max="100" /></div>
+          <div class="form-actions">
+            <span class="spacer"></span>
+            <button id="saveWorkerBtn" type="button" class="btn btn-primary">Enregistrer</button>
+          </div>
+          <p class="msg" id="workerStatus"></p>
+        </div>
+      </section>
+
+      <!-- Connexion -->
+      <section class="card settings" aria-labelledby="h-connect">
+        <div class="settings-intro">
+          <span class="card-icon"><span data-icon="smartphone"></span></span>
+          <h2 id="h-connect">Connexion des autres profils et du téléphone</h2>
+          <p>Un seul code configure le relais et l'IA partout.</p>
+          <div class="callout callout-warn callout-sm">
+            <span data-icon="lock" data-size="16"></span>
+            <span>Le code contient le token GitHub (et la clé IA) : traite-le comme un mot de passe.</span>
+          </div>
+        </div>
+        <div class="settings-body">
+          <div class="sub">
+            <h3>Code de connexion</h3>
+            <div class="row-gap">
+              <button id="makeCodeBtn" type="button" class="btn btn-secondary"><span data-icon="key"></span>Générer le code</button>
+              <button id="copyCodeBtn" type="button" class="btn btn-ghost"><span data-icon="copy"></span>Copier</button>
+            </div>
+            <textarea id="codeOut" class="input mono code" rows="3" readonly placeholder="Le code apparaîtra ici." aria-label="Code de connexion généré"></textarea>
+          </div>
+          <div class="sub">
+            <h3>J'ai déjà un code <span class="muted">· autre profil Chrome</span></h3>
+            <label class="sr-only" for="codeIn">Code à importer</label>
+            <textarea id="codeIn" class="input mono code" rows="2" placeholder="REV1.…" spellcheck="false"></textarea>
+            <div class="row-gap"><button id="importCodeBtn" type="button" class="btn btn-secondary"><span data-icon="download"></span>Importer ce code</button></div>
+          </div>
+          <div class="sub phone-box">
+            <div class="phone-form">
+              <h3>Téléphone</h3>
+              <div class="field"><label class="label" for="webUrl">Adresse du dashboard téléphone (Netlify)</label><input type="text" id="webUrl" class="input" placeholder="https://revendo-xxx.netlify.app" autocomplete="off" spellcheck="false" /></div>
+              <div class="row-gap">
+                <button id="makeQrBtn" type="button" class="btn btn-primary"><span data-icon="qr"></span>Afficher le QR code</button>
+                <button id="copyLinkBtn" type="button" class="btn btn-ghost"><span data-icon="link"></span>Copier le lien</button>
+              </div>
+              <p class="field-hint">Scanne le QR avec l'appareil photo du téléphone : le dashboard s'ouvre déjà connecté.</p>
+            </div>
+            <div class="qr-frame">
+              <div id="qr" class="qr"></div>
+              <div class="qr-empty" id="qrEmpty"><span data-icon="qr" data-size="28"></span><span>Le QR code s'affichera ici</span></div>
+            </div>
+          </div>
+          <p class="msg" id="codeStatus"></p>
+        </div>
+      </section>
+
+      <!-- Entretien -->
+      <section class="card settings" aria-labelledby="h-maint">
+        <div class="settings-intro">
+          <span class="card-icon"><span data-icon="archive"></span></span>
+          <h2 id="h-maint">Entretien du relais</h2>
+          <p>Les photos supprimées restent dans l'historique Git. Si le dépôt grossit trop, compacte l'historique quand aucune annonce n'est en cours d'envoi.</p>
+        </div>
+        <div class="settings-body">
+          <div class="action-list">
+            <div class="action-row">
+              <span class="action-text"><b>Effacer les anciens statuts</b><small>Annonces terminées depuis plus de 30 jours</small></span>
+              <button id="pruneBtn" type="button" class="btn btn-secondary"><span data-icon="eraser"></span>Effacer</button>
+            </div>
+            <div class="action-row">
+              <span class="action-text"><b>Compacter l'historique</b><small>Repart d'un historique Git vierge (quelques secondes)</small></span>
+              <button id="compactBtn" type="button" class="btn btn-danger"><span data-icon="archive"></span>Compacter</button>
+            </div>
+          </div>
+          <p class="msg" id="maintStatus"></p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ===================== JOURNAL ===================== -->
+    <section class="tab-panel hidden" data-panel="journal" aria-labelledby="h-journal">
+      <header class="page-head">
+        <div class="page-title">
+          <h1 id="h-journal">Journal</h1>
+          <p>Les 50 derniers événements du robot de ce profil</p>
+        </div>
+        <div class="page-actions">
+          <button id="refreshLogBtn" type="button" class="btn btn-secondary"><span data-icon="refresh"></span>Actualiser</button>
+        </div>
+      </header>
+      <div class="card card-flush">
+        <div id="logList" class="log"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<script src="../lib/qrcode/qrcode.js"></script>
+<script type="module" src="dashboard.js"></script>
+</body>
+</html>

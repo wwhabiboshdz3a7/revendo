@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f6f7f8" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0b0d0f" media="(prefers-color-scheme: dark)" />
+<meta name="color-scheme" content="light dark" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Revendo" />
+<meta name="format-detection" content="telephone=no" />
+<title>Revendo</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="stylesheet" href="app.css" />
+<link rel="modulepreload" href="app.js" />
+</head>
+<body>
+  <!-- ========== Connexion ========== -->
+  <main id="setupView" class="view view-setup hidden">
+    <div class="setup">
+      <div class="brand-mark brand-mark-lg"><span data-icon="tag" data-size="30"></span></div>
+      <h1 class="setup-title">Connecte ce téléphone</h1>
+      <p class="setup-lead">Revendo envoie tes photos au PC, qui prépare le brouillon Vinted.</p>
+
+      <ol class="steps">
+        <li><span class="step-n">1</span><span>Sur le PC, ouvre l’extension Revendo → <b>Réglages</b>.</span></li>
+        <li><span class="step-n">2</span><span>Clique sur <b>Afficher le QR code</b>.</span></li>
+        <li><span class="step-n">3</span><span>Scanne-le avec l’appareil photo de ce téléphone.</span></li>
+      </ol>
+
+      <div class="divider"><span>ou colle le code de connexion</span></div>
+
+      <label class="sr-only" for="codeInput">Code de connexion</label>
+      <textarea id="codeInput" class="input code-input" rows="3" placeholder="REV1.…" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+      <button id="connectBtn" type="button" class="btn btn-primary btn-lg btn-block">Connecter</button>
+      <div id="setupStatus" class="callout hidden" role="alert"></div>
+    </div>
+  </main>
+
+  <!-- ========== Accueil ========== -->
+  <main id="homeView" class="view hidden">
+    <header class="appbar">
+      <div class="brand-mark" aria-hidden="true"><span data-icon="tag" data-size="20"></span></div>
+      <div class="appbar-text">
+        <h1 id="hello" class="appbar-hello">Bonjour</h1>
+        <p class="appbar-sub">Photos, prix, compte : le PC fait le reste.</p>
+      </div>
+      <button id="settingsBtn" type="button" class="btn-icon" aria-label="Réglages"><span data-icon="settings" data-size="22"></span></button>
+    </header>
+
+    <section class="section" aria-labelledby="accountsTitle">
+      <div class="section-head">
+        <h2 id="accountsTitle">Comptes Vinted</h2>
+        <span id="accountsMeta" class="section-meta"></span>
+      </div>
+      <div class="accounts" id="accountsRow"></div>
+    </section>
+
+    <button id="newBtn" type="button" class="btn btn-primary btn-xl btn-block new-btn">
+      <span data-icon="camera" data-size="22"></span>Nouvelle annonce
+    </button>
+
+    <section class="section" aria-labelledby="queueTitle">
+      <div class="section-head">
+        <h2 id="queueTitle">Suivi</h2>
+        <button id="refreshBtn" type="button" class="btn-icon btn-icon-sm" aria-label="Actualiser"><span data-icon="refresh" data-size="18"></span></button>
+      </div>
+      <div id="homeMsg" class="callout callout-err hidden" role="alert"></div>
+      <div id="queue" class="queue" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <!-- ========== Nouvelle annonce ========== -->
+  <main id="newView" class="view view-new hidden">
+    <header class="appbar appbar-sticky">
+      <button id="backBtn" type="button" class="btn-icon" aria-label="Retour"><span data-icon="arrowLeft" data-size="22"></span></button>
+      <h1 class="appbar-title">Nouvelle annonce</h1>
+      <span class="appbar-spacer"></span>
+    </header>
+
+    <section class="card" aria-labelledby="photosTitle">
+      <div class="card-head">
+        <h2 id="photosTitle">Photos</h2>
+        <span id="photoCount" class="section-meta"></span>
+      </div>
+      <div class="photos" id="photoGrid"></div>
+      <input type="file" id="photoInput" class="sr-only" accept="image/*" multiple tabindex="-1" aria-hidden="true" />
+      <p class="hint" id="photoHint"></p>
+    </section>
+
+    <section class="card">
+      <label class="label" for="price">Prix</label>
+      <div class="price-field">
+        <input type="text" id="price" class="price-input" inputmode="decimal" placeholder="0" autocomplete="off" enterkeyhint="done" aria-describedby="priceCheck" />
+        <span class="price-unit" aria-hidden="true">€</span>
+      </div>
+      <p id="priceCheck" class="field-hint"></p>
+    </section>
+
+    <section class="card">
+      <div class="label" id="accountLabel">Compte Vinted</div>
+      <div class="chips" id="accountChips" role="radiogroup" aria-labelledby="accountLabel"></div>
+      <div class="label" id="rayonLabel">Rayon</div>
+      <div class="segmented" id="rayonChips" role="radiogroup" aria-labelledby="rayonLabel"></div>
+    </section>
+
+    <details class="card more" id="moreBox">
+      <summary>
+        <span class="more-title">Préciser</span>
+        <span class="more-sub" id="moreSub">optionnel · marque, taille, état, note</span>
+        <span class="more-chev" data-icon="chevronDown" data-size="20"></span>
+      </summary>
+      <div class="more-body">
+        <div class="grid-2">
+          <div>
+            <label class="label" for="brand">Marque</label>
+            <input type="text" id="brand" class="input" placeholder="Ex : Zara" autocomplete="off" autocapitalize="words" />
+          </div>
+          <div>
+            <label class="label" for="size">Taille</label>
+            <input type="text" id="size" class="input" placeholder="Ex : M, 38" autocomplete="off" autocapitalize="characters" />
+          </div>
+        </div>
+        <p class="hint" style="margin-top:8px">Laisse vide : la marque et la taille sont lues sur les photos.</p>
+        <div class="label" id="conditionLabel">État</div>
+        <div class="chips" id="conditionChips" role="radiogroup" aria-labelledby="conditionLabel"></div>
+        <label class="label" for="notes">Note pour l’annonce</label>
+        <input type="text" id="notes" class="input" placeholder="Ex : petite tache sur la manche" autocomplete="off" />
+      </div>
+    </details>
+
+    <div class="action-bar">
+      <div class="action-inner">
+        <div id="sendStatus" class="action-status" role="status" aria-live="polite"></div>
+        <button id="sendBtn" type="button" class="btn btn-primary btn-lg btn-block"><span data-icon="send" data-size="20"></span><span id="sendLabel">Envoyer au PC</span></button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ========== Feuille du bas (détail / réglages) ========== -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-backdrop" id="sheetBackdrop"></div>
+    <div class="sheet-panel" id="sheetPanel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" tabindex="-1">
+      <div class="sheet-grip" id="sheetGrip"><span class="sheet-handle"></span></div>
+      <button id="sheetClose" type="button" class="btn-icon btn-icon-sm sheet-close" aria-label="Fermer"><span data-icon="x" data-size="18"></span></button>
+      <div id="sheetBody" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
