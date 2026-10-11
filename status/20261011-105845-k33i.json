@@ -1,0 +1,12 @@
+{
+  "id": "20261011-105845-k33i",
+  "account": "lauraaix",
+  "state": "processing",
+  "startedAt": "2026-10-11T11:22:20.925Z",
+  "updatedAt": "2026-10-11T11:22:20.925Z",
+  "worker": {
+    "login": "lauraaix",
+    "ext": "3.4.0",
+    "profile": ""
+  }
+}
