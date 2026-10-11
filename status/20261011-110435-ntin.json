@@ -1,0 +1,12 @@
+{
+  "id": "20261011-110435-ntin",
+  "account": "lauraaix",
+  "state": "processing",
+  "startedAt": "2026-10-11T11:59:34.165Z",
+  "updatedAt": "2026-10-11T11:59:34.165Z",
+  "worker": {
+    "login": "lauraaix",
+    "ext": "3.4.0",
+    "profile": ""
+  }
+}
