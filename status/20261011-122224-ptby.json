@@ -1,0 +1,12 @@
+{
+  "id": "20261011-122224-ptby",
+  "account": "elias..djb",
+  "state": "processing",
+  "startedAt": "2026-10-11T12:22:48.428Z",
+  "updatedAt": "2026-10-11T12:22:48.428Z",
+  "worker": {
+    "login": "elias..djb",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
