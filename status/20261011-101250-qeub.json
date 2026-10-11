@@ -1,0 +1,12 @@
+{
+  "id": "20261011-101250-qeub",
+  "account": "tms13.80",
+  "state": "processing",
+  "startedAt": "2026-10-11T10:23:29.320Z",
+  "updatedAt": "2026-10-11T10:23:29.320Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
