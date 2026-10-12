@@ -1,0 +1,12 @@
+{
+  "id": "20261012-170511-ybm9",
+  "account": "tms13.80",
+  "state": "processing",
+  "startedAt": "2026-10-12T17:05:34.875Z",
+  "updatedAt": "2026-10-12T17:05:34.876Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
