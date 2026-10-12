@@ -1,0 +1,12 @@
+{
+  "id": "20261012-223656-dvmf",
+  "account": "tms13.80",
+  "state": "processing",
+  "startedAt": "2026-10-12T22:37:04.858Z",
+  "updatedAt": "2026-10-12T22:37:04.858Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
