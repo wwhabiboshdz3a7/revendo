@@ -1,0 +1,12 @@
+{
+  "id": "20261012-223517-wu7m",
+  "account": "elias..djb",
+  "state": "processing",
+  "startedAt": "2026-10-12T22:35:27.580Z",
+  "updatedAt": "2026-10-12T22:35:27.580Z",
+  "worker": {
+    "login": "elias..djb",
+    "ext": "3.4.0",
+    "profile": "Elias"
+  }
+}
