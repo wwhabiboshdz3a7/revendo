@@ -1,0 +1,13 @@
+{
+  "id": "20261020-221131-6o4v",
+  "account": "lauraaix",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-20T22:13:08.185Z",
+  "updatedAt": "2026-10-20T22:13:08.185Z",
+  "worker": {
+    "login": "lauraaix",
+    "ext": "3.5.0",
+    "profile": "Elias"
+  }
+}
