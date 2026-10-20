@@ -4,7 +4,7 @@
   "state": "processing",
   "attempts": 0,
   "startedAt": "2026-10-20T22:36:24.424Z",
-  "updatedAt": "2026-10-20T22:36:24.424Z",
+  "updatedAt": "2026-10-20T22:38:22.928Z",
   "worker": {
     "login": "lauraaix",
     "ext": "3.5.0",
