@@ -1,0 +1,13 @@
+{
+  "id": "20261021-151952-jls7",
+  "account": "elias..djb",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-21T15:20:47.351Z",
+  "updatedAt": "2026-10-21T15:20:47.351Z",
+  "worker": {
+    "login": "elias..djb",
+    "ext": "3.5.0",
+    "profile": "Elias"
+  }
+}
