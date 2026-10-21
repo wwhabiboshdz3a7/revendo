@@ -4,7 +4,7 @@
   "state": "processing",
   "attempts": 1,
   "startedAt": "2026-10-21T13:48:48.392Z",
-  "updatedAt": "2026-10-21T13:48:48.392Z",
+  "updatedAt": "2026-10-21T13:51:23.821Z",
   "worker": {
     "login": "tms13.80",
     "ext": "3.5.0",
