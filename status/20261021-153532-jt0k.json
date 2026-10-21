@@ -4,7 +4,7 @@
   "state": "processing",
   "attempts": 0,
   "startedAt": "2026-10-21T15:36:19.902Z",
-  "updatedAt": "2026-10-21T15:36:19.902Z",
+  "updatedAt": "2026-10-21T15:37:03.216Z",
   "worker": {
     "login": "elias..djb",
     "ext": "3.5.0",
