@@ -1,0 +1,13 @@
+{
+  "id": "20261021-101236-tay4",
+  "account": "lauraaix",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-21T10:14:32.369Z",
+  "updatedAt": "2026-10-21T10:14:32.369Z",
+  "worker": {
+    "login": "lauraaix",
+    "ext": "3.5.0",
+    "profile": "Elias"
+  }
+}
