@@ -1,0 +1,13 @@
+{
+  "id": "20261021-131552-be82",
+  "account": "tms13.80",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-21T13:16:12.529Z",
+  "updatedAt": "2026-10-21T13:16:12.529Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.5.0",
+    "profile": "Thomas"
+  }
+}
