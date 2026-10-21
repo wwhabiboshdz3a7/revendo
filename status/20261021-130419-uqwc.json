@@ -1,0 +1,13 @@
+{
+  "id": "20261021-130419-uqwc",
+  "account": "tms13.80",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-21T13:05:04.656Z",
+  "updatedAt": "2026-10-21T13:05:04.656Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.5.0",
+    "profile": "Thomas"
+  }
+}
