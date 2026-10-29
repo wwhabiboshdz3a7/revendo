@@ -1,13 +1,10 @@
 {
+  "state": "retry",
+  "attempts": 1,
+  "retryAt": "2026-10-29T10:14:50.415Z",
+  "message": "Nouvel essai automatique prévu : Remplissage interrompu (Chrome ou l’extension a redémarré).",
+  "lastError": "Remplissage interrompu (Chrome ou l’extension a redémarré).",
   "id": "20261029-100944-9nsr",
   "account": "pauline.desri",
-  "state": "processing",
-  "attempts": 0,
-  "startedAt": "2026-10-29T10:09:56.312Z",
-  "updatedAt": "2026-10-29T10:09:56.312Z",
-  "worker": {
-    "login": "pauline.desri",
-    "ext": "3.5.0",
-    "profile": "Elias"
-  }
+  "updatedAt": "2026-10-29T10:11:51.815Z"
 }
