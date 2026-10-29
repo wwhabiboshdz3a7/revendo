@@ -1,0 +1,13 @@
+{
+  "id": "20261029-104519-1qsk",
+  "account": "tms13.80",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-29T10:54:21.404Z",
+  "updatedAt": "2026-10-29T10:54:21.404Z",
+  "worker": {
+    "login": "tms13.80",
+    "ext": "3.5.0",
+    "profile": "Thomas"
+  }
+}
