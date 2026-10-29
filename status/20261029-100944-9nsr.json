@@ -4,7 +4,7 @@
   "state": "processing",
   "attempts": 0,
   "startedAt": "2026-10-29T10:13:22.879Z",
-  "updatedAt": "2026-10-29T10:13:22.879Z",
+  "updatedAt": "2026-10-29T10:15:33.739Z",
   "worker": {
     "login": "pauline.desri",
     "ext": "3.5.0",
