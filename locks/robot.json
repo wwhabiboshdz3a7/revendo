@@ -1,13 +1,8 @@
 {
-  "holder": "tms13.80",
-  "profile": "Thomas",
-  "jobId": "20261029-104519-1qsk",
-  "at": "2026-10-29T10:54:21.404Z",
-  "until": "2026-10-29T11:13:24.615Z",
-  "waiters": {
-    "pauline.desri": {
-      "since": "2026-10-29T10:54:29.152Z",
-      "seen": "2026-10-29T10:58:54.125Z"
-    }
-  }
+  "holder": "",
+  "reservedFor": "pauline.desri",
+  "jobId": "",
+  "at": "2026-10-29T10:59:11.455Z",
+  "until": "2026-10-29T11:00:26.455Z",
+  "waiters": {}
 }
