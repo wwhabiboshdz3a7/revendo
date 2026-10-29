@@ -1,0 +1,13 @@
+{
+  "id": "20261029-100944-9nsr",
+  "account": "pauline.desri",
+  "state": "processing",
+  "attempts": 0,
+  "startedAt": "2026-10-29T10:13:22.879Z",
+  "updatedAt": "2026-10-29T10:13:22.879Z",
+  "worker": {
+    "login": "pauline.desri",
+    "ext": "3.5.0",
+    "profile": "Elias"
+  }
+}
